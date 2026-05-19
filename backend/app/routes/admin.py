@@ -1,0 +1,302 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.auth.admin_deps import require_admin
+from app.auth.passwords import hash_password
+from app.config.database import get_db
+from app.models.attendance import Attendance
+from app.models.employee import Employee, EmployeeRole
+from app.models.location import WorkplaceLocation
+from app.services.work_session_stats import get_global_session_stats
+from app.schemas.admin import (
+    AdminAttendanceRow,
+    AdminCreateEmployeeRequest,
+    AdminCreateLocationRequest,
+    AdminUpdateLocationRequest,
+    AdminEmployeeOut,
+    EmployeeUpdateRequest,
+    AdminLocationOut,
+    AdminPlanningItem,
+    AdminStatisticsResponse,
+)
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _employee_to_out(e: Employee) -> AdminEmployeeOut:
+    return AdminEmployeeOut(
+        id=e.id,
+        name=e.name,
+        email=e.email,
+        role=e.role.value,
+        is_active=e.is_active,
+        phone=e.phone,
+        assigned_location_id=e.assigned_location_id,
+    )
+
+
+@router.get("/employees", response_model=list[AdminEmployeeOut])
+def list_employees(
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    rows = db.scalars(select(Employee).order_by(Employee.id)).all()
+    return [_employee_to_out(e) for e in rows]
+
+
+@router.post("/employees", response_model=AdminEmployeeOut, status_code=status.HTTP_201_CREATED)
+def create_employee(
+    body: AdminCreateEmployeeRequest,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    """Create an employee account (always role employee — admins are not created here)."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name is required")
+
+    email_norm = body.email.strip().lower()
+    existing = db.scalars(select(Employee).where(func.lower(Employee.email) == email_norm)).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists.",
+        )
+
+    employee = Employee(
+        name=name,
+        email=email_norm,
+        password=hash_password(body.password),
+        role=EmployeeRole.employee,
+    )
+    db.add(employee)
+    db.commit()
+    db.refresh(employee)
+    return _employee_to_out(employee)
+
+
+@router.put("/employees/{employee_id}", response_model=AdminEmployeeOut)
+def update_employee(
+    employee_id: int,
+    body: EmployeeUpdateRequest,
+    db: Session = Depends(get_db),
+    current_admin: Employee = Depends(require_admin),
+):
+    """Name, E-Mail, Rolle, Telefon, Standort und Status eines Mitarbeiters bearbeiten."""
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mitarbeiter nicht gefunden.")
+
+    # E-Mail-Duplikat prüfen (außer bei sich selbst)
+    email_norm = body.email.strip().lower()
+    existing = db.scalars(
+        select(Employee).where(func.lower(Employee.email) == email_norm)
+    ).first()
+    if existing is not None and existing.id != employee_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="E-Mail wird bereits verwendet.")
+
+    # Admin darf sich selbst nicht deaktivieren
+    if emp.id == current_admin.id and not body.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Du kannst dich nicht selbst deaktivieren.")
+
+    emp.name = body.name.strip()
+    emp.email = email_norm
+    emp.role = EmployeeRole(body.role)
+    emp.phone = body.phone.strip() if body.phone else None
+    emp.assigned_location_id = body.assigned_location_id
+    emp.is_active = body.is_active
+    db.commit()
+    db.refresh(emp)
+    return _employee_to_out(emp)
+
+
+@router.patch("/employees/{employee_id}/activate", response_model=AdminEmployeeOut)
+def activate_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mitarbeiter nicht gefunden.")
+    emp.is_active = True
+    db.commit()
+    db.refresh(emp)
+    return _employee_to_out(emp)
+
+
+@router.patch("/employees/{employee_id}/deactivate", response_model=AdminEmployeeOut)
+def deactivate_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    current_admin: Employee = Depends(require_admin),
+):
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mitarbeiter nicht gefunden.")
+    if emp.id == current_admin.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Du kannst dich nicht selbst deaktivieren.")
+    emp.is_active = False
+    db.commit()
+    db.refresh(emp)
+    return _employee_to_out(emp)
+
+
+@router.get("/locations", response_model=list[AdminLocationOut])
+def list_locations(
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    rows = db.scalars(select(WorkplaceLocation).order_by(WorkplaceLocation.id)).all()
+    return [
+        AdminLocationOut(
+            id=r.id,
+            name=r.name,
+            address=r.address or "",
+            lat=r.lat,
+            lng=r.lng,
+            radius_meters=float(r.radius_meters),
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/locations", response_model=AdminLocationOut, status_code=status.HTTP_201_CREATED)
+def create_location(
+    body: AdminCreateLocationRequest,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    loc = WorkplaceLocation(
+        name=body.name.strip(),
+        address=(body.address or "").strip(),
+        lat=body.lat,
+        lng=body.lng,
+        radius_meters=body.radius_meters,
+    )
+    db.add(loc)
+    db.commit()
+    db.refresh(loc)
+    return AdminLocationOut(
+        id=loc.id,
+        name=loc.name,
+        address=loc.address or "",
+        lat=loc.lat,
+        lng=loc.lng,
+        radius_meters=float(loc.radius_meters),
+        created_at=loc.created_at,
+    )
+
+
+@router.put("/locations/{location_id}", response_model=AdminLocationOut)
+def update_location(
+    location_id: int,
+    body: AdminUpdateLocationRequest,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    loc = db.get(WorkplaceLocation, location_id)
+    if loc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Standort nicht gefunden.")
+    loc.name = body.name.strip()
+    loc.address = (body.address or "").strip()
+    loc.lat = body.lat
+    loc.lng = body.lng
+    loc.radius_meters = body.radius_meters
+    db.commit()
+    db.refresh(loc)
+    return AdminLocationOut(
+        id=loc.id,
+        name=loc.name,
+        address=loc.address or "",
+        lat=loc.lat,
+        lng=loc.lng,
+        radius_meters=float(loc.radius_meters),
+        created_at=loc.created_at,
+    )
+
+
+@router.delete("/locations/{location_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_location(
+    location_id: int,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    loc = db.get(WorkplaceLocation, location_id)
+    if loc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Standort nicht gefunden.")
+    db.delete(loc)
+    db.commit()
+
+
+@router.get("/attendance", response_model=list[AdminAttendanceRow])
+def list_all_attendance(
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    stmt = (
+        select(Attendance, Employee)
+        .join(Employee, Attendance.employee_id == Employee.id)
+        .order_by(Attendance.created_at.desc())
+        .limit(500)
+    )
+    rows = db.execute(stmt).all()
+    return [
+        AdminAttendanceRow(
+            employee_name=emp.name,
+            employee_email=emp.email,
+            type=att.log_type,
+            lat=att.lat,
+            lng=att.lng,
+            created_at=att.created_at,
+        )
+        for att, emp in rows
+    ]
+
+
+@router.get("/statistics", response_model=AdminStatisticsResponse)
+def statistics(
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    total_employees = db.scalar(select(func.count()).select_from(Employee)) or 0
+    total_logs = db.scalar(select(func.count()).select_from(Attendance)) or 0
+
+    rn = (
+        func.row_number()
+        .over(partition_by=Attendance.employee_id, order_by=Attendance.created_at.desc())
+        .label("rn")
+    )
+    subq = (
+        select(Attendance.employee_id, Attendance.log_type, rn)
+        .where(Attendance.employee_id.is_not(None))
+        .subquery()
+    )
+    latest = (
+        select(subq.c.employee_id, subq.c.log_type).where(subq.c.rn == 1).subquery()
+    )
+    active_now = (
+        db.scalar(select(func.count()).select_from(latest).where(latest.c.log_type == "checkin")) or 0
+    )
+
+    ws_stats = get_global_session_stats(db)
+
+    return AdminStatisticsResponse(
+        total_employees=total_employees,
+        total_logs=total_logs,
+        active_now=active_now,
+        official_seconds=ws_stats["official_seconds"],
+        official_hours=ws_stats["official_hours"],
+        pending_count=ws_stats["pending_count"],
+        pending_hours=ws_stats["pending_hours"],
+    )
+
+
+@router.get("/planning", response_model=list[AdminPlanningItem])
+def planning_placeholder(
+    _: Employee = Depends(require_admin),
+):
+    """Reserved for shifts and rosters — empty for now."""
+    return []
