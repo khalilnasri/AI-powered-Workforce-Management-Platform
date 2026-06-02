@@ -47,6 +47,7 @@ const Ico = {
   location:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="3"/></svg>,
   brain:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>,
   sun:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>,
+  umbrella: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22v-6"/><path d="M4.5 10a7.5 7.5 0 0 1 15 0Z"/><path d="M2 10h20"/></svg>,
 };
 
 // ── Leaflet Helpers ─────────────────────────────────────────────────────────
@@ -75,6 +76,7 @@ const NAV_GROUPS = [
   {
     label: "Verwaltung",
     items: [
+      { id: "leaveRequests", label: "Urlaubanträge", icon: "umbrella" },
       { id: "locations", label: "Standorte",       icon: "map"      },
       { id: "planning",  label: "Planung",          icon: "calendar" },
       { id: "reports",   label: "Berichte",        icon: "chart"    },
@@ -91,7 +93,7 @@ const NAV_GROUPS = [
 ];
 const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
-function Sidebar({ active, onNav, onLogout, pendingCount }) {
+function Sidebar({ active, onNav, onLogout, pendingCount, leavePendingCount }) {
   return (
     <aside className="ad-sidebar">
       <div className="ad-sidebar__brand">
@@ -116,6 +118,9 @@ function Sidebar({ active, onNav, onLogout, pendingCount }) {
                 <span className="ad-sidebar__label">{item.label}</span>
                 {item.id === "approvals" && pendingCount > 0 && (
                   <span className="ad-sidebar__badge">{pendingCount}</span>
+                )}
+                {item.id === "leaveRequests" && leavePendingCount > 0 && (
+                  <span className="ad-sidebar__badge">{leavePendingCount}</span>
                 )}
               </button>
             ))}
@@ -468,6 +473,79 @@ function ApprovalBadge({ status }) {
   return <span className={`ad-badge ${cls}`}>{label}</span>;
 }
 
+/** Tabellenzelle „Urlaub übrig“: noch buchbar / Soll + grüner Balken (Anteil genommen) */
+function AdminEmployeeLeaveMeterCell({ row }) {
+  const resolved = Number(row.leave_annual_resolved) || 0;
+  const avail = Number(row.leave_available) || 0;
+  const used = Number(row.leave_used_this_year) || 0;
+  const pctUsed = resolved > 0 ? Math.min(100, Math.round((used / resolved) * 100)) : 0;
+  const label = `${avail} / ${resolved} Tage`;
+  return (
+    <td className="ad-table__leave">
+      <div className="ad-leave-meter__label">{label}</div>
+      <div
+        className="ad-leave-meter"
+        role="progressbar"
+        aria-valuenow={pctUsed}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Urlaub im Jahr: ${pctUsed} Prozent bereits genommen`}
+      >
+        <div className="ad-leave-meter__fill" style={{ width: `${pctUsed}%` }} />
+      </div>
+    </td>
+  );
+}
+
+/** Vier Kennzahlen-Karten im Urlaub-Modal (Vorlage „Urlaub Statistik“) */
+function AdminLeaveModalStatCards({ emp }) {
+  const annual = Number(emp.leave_annual_resolved) || 0;
+  const used = Number(emp.leave_used_this_year) || 0;
+  const remaining = Number(emp.leave_remaining) || 0;
+  const pendingDays = Number(emp.leave_pending_days_this_year) || 0;
+  const pendingCnt = Number(emp.leave_pending_count) || 0;
+  const pctTaken = annual > 0 ? Math.min(100, Math.round((used / annual) * 100)) : 0;
+  const pctRemain = annual > 0 ? Math.min(100, Math.round((remaining / annual) * 100)) : 0;
+  return (
+    <div className="ad-leave-stat-grid">
+      <div className="ad-leave-stat-card ad-leave-stat-card--blue">
+        <div className="ad-leave-stat-card__icon" aria-hidden>📅</div>
+        <div className="ad-leave-stat-card__body">
+          <span className="ad-leave-stat-card__label">Jährlicher Anspruch</span>
+          <strong className="ad-leave-stat-card__value">{annual} Tage</strong>
+          <span className="ad-leave-stat-card__hint">pro Kalenderjahr</span>
+        </div>
+      </div>
+      <div className="ad-leave-stat-card ad-leave-stat-card--green">
+        <div className="ad-leave-stat-card__icon" aria-hidden>✓</div>
+        <div className="ad-leave-stat-card__body">
+          <span className="ad-leave-stat-card__label">Genommener Urlaub</span>
+          <strong className="ad-leave-stat-card__value">{used} Tage</strong>
+          <span className="ad-leave-stat-card__hint">{pctTaken}% des Anspruchs</span>
+        </div>
+      </div>
+      <div className="ad-leave-stat-card ad-leave-stat-card--sky">
+        <div className="ad-leave-stat-card__icon" aria-hidden>✈</div>
+        <div className="ad-leave-stat-card__body">
+          <span className="ad-leave-stat-card__label">Verbleibender Urlaub</span>
+          <strong className="ad-leave-stat-card__value">{remaining} Tage</strong>
+          <span className="ad-leave-stat-card__hint">{pctRemain}% verfügbar</span>
+        </div>
+      </div>
+      <div className="ad-leave-stat-card ad-leave-stat-card--violet">
+        <div className="ad-leave-stat-card__icon" aria-hidden>📋</div>
+        <div className="ad-leave-stat-card__body">
+          <span className="ad-leave-stat-card__label">Geplante Anträge</span>
+          <strong className="ad-leave-stat-card__value">{pendingDays} Tage ausstehend</strong>
+          <span className="ad-leave-stat-card__hint">
+            {pendingCnt} {pendingCnt === 1 ? "Antrag" : "Anträge"} offen
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ════════════════════════════════════════════════════════════════════════════
@@ -502,6 +580,7 @@ export function AdminDashboard() {
   const [newEmpName, setNewEmpName]         = useState("");
   const [newEmpEmail, setNewEmpEmail]       = useState("");
   const [newEmpPassword, setNewEmpPassword] = useState("");
+  const [newEmpAnnual, setNewEmpAnnual]     = useState("");
   const [empFormError, setEmpFormError]     = useState(null);
   const [empFormBusy, setEmpFormBusy]       = useState(false);
   const [showNewEmpForm, setShowNewEmpForm] = useState(false);
@@ -516,6 +595,12 @@ export function AdminDashboard() {
   const [editIsActive, setEditIsActive] = useState(true);
   const [editEmpError, setEditEmpError] = useState(null);
   const [editEmpBusy, setEditEmpBusy]   = useState(false);
+
+  /** Urlaub nur im Modal (Button „Urlaub“ in der Tabelle) */
+  const [leaveModalEmpId, setLeaveModalEmpId] = useState(null);
+  const [leaveModalAnnual, setLeaveModalAnnual] = useState("");
+  const [leaveModalError, setLeaveModalError] = useState(null);
+  const [leaveModalBusy, setLeaveModalBusy] = useState(false);
 
   // ── Location form ─────────────────────────────────────────────────────────
   const [locEditId, setLocEditId]   = useState(null);
@@ -545,8 +630,18 @@ export function AdminDashboard() {
   const [pendingCount,   setPendingCount]   = useState(0);
   const [correctedCount, setCorrectedCount] = useState(0);
   const [rejectedCount,  setRejectedCount]  = useState(0);
+  const [leavePendingCount, setLeavePendingCount] = useState(0);
 
-  // ── Approvals ─────────────────────────────────────────────────────────────
+  // ── Urlaub (Admin) ───────────────────────────────────────────────────────
+  const [leaveAdminList,    setLeaveAdminList]    = useState([]);
+  const [leaveAdminLoading, setLeaveAdminLoading] = useState(false);
+  const [leaveAdminError,   setLeaveAdminError]   = useState(null);
+  const [leaveActionBusy,   setLeaveActionBusy]   = useState(false);
+  const [leaveActionMsg,    setLeaveActionMsg]    = useState(null);
+  const [leaveRejectingId,  setLeaveRejectingId]  = useState(null);
+  const [leaveRejectReason, setLeaveRejectReason] = useState("");
+  /** Nur in „Urlaubanträge“: API-Filter ?employee_id= */
+  const [leaveAdminEmployeeFilter, setLeaveAdminEmployeeFilter] = useState(null);
   const [approvals,           setApprovals]           = useState([]);
   const [approvalsLoading,    setApprovalsLoading]    = useState(false);
   const [approvalsError,      setApprovalsError]      = useState(null);
@@ -581,6 +676,12 @@ export function AdminDashboard() {
       setPendingCount(allA.filter((a) => a.status === "pending").length);
       setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
       setRejectedCount(allA.filter((a) => a.status === "rejected").length);
+      try {
+        const lr = await apiClient.get("/admin/leave-requests?status=pending");
+        setLeavePendingCount((lr.data ?? []).length);
+      } catch {
+        setLeavePendingCount(0);
+      }
     } catch {
       // Non-critical — badge counts stay at previous values
     } finally { setBusy(false); }
@@ -612,6 +713,12 @@ export function AdminDashboard() {
         setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
         setRejectedCount(allA.filter((a) => a.status === "rejected").length);
       } catch { /* counts stay at previous value */ }
+      try {
+        const lr = await apiClient.get("/admin/leave-requests?status=pending");
+        setLeavePendingCount((lr.data ?? []).length);
+      } catch {
+        setLeavePendingCount(0);
+      }
     } catch (err) {
       setLoadError(axios.isAxiosError(err) && err.response?.status === 403
         ? "Kein Zugriff (nur Administratoren)."
@@ -644,12 +751,44 @@ export function AdminDashboard() {
     if (activeSection === "approvals") fetchApprovals();
   }, [activeSection, fetchApprovals]);
 
-  // ── Employee handlers ─────────────────────────────────────────────────────
+  const fetchLeaveAdmin = useCallback(async () => {
+    setLeaveAdminLoading(true);
+    setLeaveAdminError(null);
+    try {
+      const p = new URLSearchParams();
+      if (leaveAdminEmployeeFilter != null) {
+        p.set("employee_id", String(leaveAdminEmployeeFilter));
+      }
+      const q = p.toString();
+      const res = await apiClient.get(`/admin/leave-requests${q ? `?${q}` : ""}`);
+      setLeaveAdminList(res.data ?? []);
+    } catch {
+      setLeaveAdminList([]);
+      setLeaveAdminError("Urlaubanträge konnten nicht geladen werden.");
+    } finally {
+      setLeaveAdminLoading(false);
+    }
+  }, [leaveAdminEmployeeFilter]);
+
+  useEffect(() => {
+    if (activeSection === "leaveRequests") fetchLeaveAdmin();
+  }, [activeSection, fetchLeaveAdmin]);
   async function handleCreateEmployee(e) {
     e.preventDefault(); setEmpFormError(null); setEmpFormBusy(true);
     try {
-      await apiClient.post(EMPLOYEES_URL, { name: newEmpName.trim(), email: newEmpEmail.trim(), password: newEmpPassword });
-      setNewEmpName(""); setNewEmpEmail(""); setNewEmpPassword("");
+      const payload = { name: newEmpName.trim(), email: newEmpEmail.trim(), password: newEmpPassword };
+      const a = newEmpAnnual.trim();
+      if (a !== "") {
+        const n = Number(a);
+        if (!Number.isInteger(n) || n < 0 || n > 365) {
+          setEmpFormError("Urlaubstage/Jahr: ganze Zahl zwischen 0 und 365, oder leer lassen.");
+          setEmpFormBusy(false);
+          return;
+        }
+        payload.annual_leave_days = n;
+      }
+      await apiClient.post(EMPLOYEES_URL, payload);
+      setNewEmpName(""); setNewEmpEmail(""); setNewEmpPassword(""); setNewEmpAnnual("");
       setShowNewEmpForm(false);
       await refreshAll();
     } catch (err) {
@@ -662,19 +801,95 @@ export function AdminDashboard() {
     setEmpEditId(emp.id); setEditName(emp.name); setEditEmail(emp.email);
     setEditPhone(emp.phone || ""); setEditRole(emp.role);
     setEditLocationId(emp.assigned_location_id ? String(emp.assigned_location_id) : "");
-    setEditIsActive(emp.is_active); setEditEmpError(null);
+    setEditIsActive(emp.is_active);
+    setEditEmpError(null);
     setTimeout(() => document.getElementById("emp-edit-anchor")?.scrollIntoView({ behavior: "smooth" }), 50);
   }
-  function handleCancelEmpEdit() { setEmpEditId(null); setEditEmpError(null); }
+  function handleCancelEmpEdit() {
+    setEmpEditId(null);
+    setEditEmpError(null);
+  }
+
+  function openEmployeeLeaveModal(emp) {
+    setLeaveModalError(null);
+    setLeaveModalEmpId(emp.id);
+    setLeaveModalAnnual(
+      emp.annual_leave_days != null && emp.annual_leave_days !== undefined
+        ? String(emp.annual_leave_days)
+        : "",
+    );
+  }
+
+  function openLeaveHistoryForEmployee(empId) {
+    setLeaveAdminEmployeeFilter(empId);
+    closeEmployeeLeaveModal();
+    setActiveSection("leaveRequests");
+  }
+
+  function closeEmployeeLeaveModal() {
+    setLeaveModalEmpId(null);
+    setLeaveModalAnnual("");
+    setLeaveModalError(null);
+  }
+
+  async function handleSaveEmployeeLeaveModal(e) {
+    e.preventDefault();
+    const src = employees.find((x) => x.id === leaveModalEmpId);
+    if (!src) return;
+
+    let annual_leave_days = null;
+    const a = leaveModalAnnual.trim();
+    if (a !== "") {
+      const n = Number(a);
+      if (!Number.isInteger(n) || n < 0 || n > 365) {
+        setLeaveModalError("Urlaubstage/Jahr: ganze Zahl zwischen 0 und 365, oder leer für System-Standard.");
+        return;
+      }
+      annual_leave_days = n;
+    }
+
+    setLeaveModalBusy(true);
+    setLeaveModalError(null);
+    try {
+      await apiClient.put(`${EMPLOYEES_URL}/${leaveModalEmpId}`, {
+        name: src.name,
+        email: src.email,
+        role: src.role,
+        phone: (src.phone && String(src.phone).trim()) || null,
+        assigned_location_id: src.assigned_location_id ?? null,
+        is_active: src.is_active,
+        annual_leave_days,
+      });
+      closeEmployeeLeaveModal();
+      await refreshAll();
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setLeaveModalError(typeof d === "string" ? d : "Speichern fehlgeschlagen.");
+    } finally {
+      setLeaveModalBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (leaveModalEmpId == null) return;
+    const onKey = (ev) => {
+      if (ev.key === "Escape" && !leaveModalBusy) closeEmployeeLeaveModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [leaveModalEmpId, leaveModalBusy]);
 
   async function handleUpdateEmployee(e) {
     e.preventDefault(); setEditEmpError(null); setEditEmpBusy(true);
     try {
+      const profileSource = employees.find((x) => x.id === empEditId);
+      const annualPreserved = profileSource?.annual_leave_days ?? null;
       await apiClient.put(`${EMPLOYEES_URL}/${empEditId}`, {
         name: editName.trim(), email: editEmail.trim(), role: editRole,
         phone: editPhone.trim() || null,
         assigned_location_id: editLocationId ? Number(editLocationId) : null,
         is_active: editIsActive,
+        annual_leave_days: annualPreserved,
       });
       handleCancelEmpEdit(); await refreshAll();
     } catch (err) {
@@ -1012,6 +1227,46 @@ export function AdminDashboard() {
     }
   }
 
+  async function handleApproveLeave(id) {
+    setLeaveActionBusy(true);
+    setLeaveActionMsg(null);
+    setLeaveAdminError(null);
+    try {
+      await apiClient.patch(`/admin/leave-requests/${id}/approve`);
+      setLeaveActionMsg("Urlaub genehmigt.");
+      setLeaveRejectingId(null);
+      setLeaveRejectReason("");
+      await Promise.all([refreshAdminData(), fetchLeaveAdmin()]);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setLeaveAdminError(typeof d === "string" ? d : "Genehmigung fehlgeschlagen.");
+    } finally {
+      setLeaveActionBusy(false);
+    }
+  }
+
+  async function handleRejectLeaveSubmit(e) {
+    e.preventDefault();
+    if (!leaveRejectingId) return;
+    setLeaveActionBusy(true);
+    setLeaveActionMsg(null);
+    setLeaveAdminError(null);
+    try {
+      await apiClient.patch(`/admin/leave-requests/${leaveRejectingId}/reject`, {
+        rejection_reason: leaveRejectReason.trim(),
+      });
+      setLeaveActionMsg("Antrag abgelehnt.");
+      setLeaveRejectingId(null);
+      setLeaveRejectReason("");
+      await Promise.all([refreshAdminData(), fetchLeaveAdmin()]);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setLeaveAdminError(typeof d === "string" ? d : "Ablehnen fehlgeschlagen.");
+    } finally {
+      setLeaveActionBusy(false);
+    }
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
   function locationName(id) {
     if (!id) return "—";
@@ -1076,6 +1331,9 @@ export function AdminDashboard() {
 
   const handleLogout = () => { clearToken(); navigate("/login"); };
 
+  const leaveModalEmp =
+    leaveModalEmpId != null ? employees.find((e) => e.id === leaveModalEmpId) ?? null : null;
+
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER
   // ══════════════════════════════════════════════════════════════════════════
@@ -1086,6 +1344,7 @@ export function AdminDashboard() {
         onNav={setActiveSection}
         onLogout={handleLogout}
         pendingCount={pendingCount}
+        leavePendingCount={leavePendingCount}
       />
 
       <div className="ad-main">
@@ -1366,6 +1625,18 @@ export function AdminDashboard() {
                       <input className="ad-input" type="password" placeholder="mind. 8 Zeichen" value={newEmpPassword}
                         onChange={(e) => setNewEmpPassword(e.target.value)} disabled={empFormBusy} minLength={8} required />
                     </div>
+                    <div className="ad-field">
+                      <label>Urlaubstage / Jahr</label>
+                      <input
+                        className="ad-input"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Leer = System-Standard (siehe .env DEFAULT_ANNUAL_LEAVE_DAYS)"
+                        value={newEmpAnnual}
+                        onChange={(e) => setNewEmpAnnual(e.target.value)}
+                        disabled={empFormBusy}
+                      />
+                    </div>
                     <div className="ad-field ad-field--actions">
                       <button type="submit" className="ad-btn ad-btn--primary" disabled={empFormBusy}>
                         {empFormBusy ? "Wird angelegt…" : "Anlegen"}
@@ -1384,11 +1655,19 @@ export function AdminDashboard() {
                 <div className="ad-table-wrap">
                   <table className="ad-table">
                     <thead>
-                      <tr><th>Mitarbeiter</th><th>Telefon</th><th>Rolle</th><th>Standort</th><th>Status</th><th>Aktionen</th></tr>
+                      <tr>
+                        <th>Mitarbeiter</th>
+                        <th>Telefon</th>
+                        <th>Rolle</th>
+                        <th>Standort</th>
+                        <th>Status</th>
+                        <th>Urlaub übrig</th>
+                        <th>Aktionen</th>
+                      </tr>
                     </thead>
                     <tbody>
                       {employees.length === 0
-                        ? <tr><td colSpan={6} className="ad-empty">Keine Mitarbeiter.</td></tr>
+                        ? <tr><td colSpan={7} className="ad-empty">Keine Mitarbeiter.</td></tr>
                         : employees.map((row) => (
                           <tr key={row.id} className={!row.is_active ? "ad-table__row--muted" : ""}>
                             <td>
@@ -1404,9 +1683,18 @@ export function AdminDashboard() {
                             <td><Badge type={row.role} /></td>
                             <td>{locationName(row.assigned_location_id)}</td>
                             <td><Badge type={row.is_active ? "active" : "inactive"} /></td>
+                            <AdminEmployeeLeaveMeterCell row={row} />
                             <td>
-                              <div className="ad-actions">
-                                <button className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
+                              <div className="ad-actions ad-actions--emp">
+                                <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
+                                <button
+                                  type="button"
+                                  className="ad-btn ad-btn--sm ad-btn--urlaub"
+                                  onClick={() => openEmployeeLeaveModal(row)}
+                                  title="Urlaubstage und Kontingent"
+                                >
+                                  Urlaub
+                                </button>
                                 <button className={`ad-btn ad-btn--sm ${row.is_active ? "ad-btn--danger" : "ad-btn--success"}`}
                                   onClick={() => handleToggleActive(row)}>
                                   {row.is_active ? "Deaktivieren" : "Aktivieren"}
@@ -1426,6 +1714,9 @@ export function AdminDashboard() {
                   <h3 className="ad-form-title">
                     Mitarbeiter bearbeiten — <em>{employees.find(e => e.id === empEditId)?.name}</em>
                   </h3>
+                  <p className="ad-hint" style={{ margin: "-0.25rem 0 0.75rem", fontSize: "0.82rem" }}>
+                    Urlaub im Detail: Spalte <strong>Urlaub übrig</strong> oder Button <strong>Urlaub</strong> in der Zeile.
+                  </p>
                   <form className="ad-form-grid" onSubmit={handleUpdateEmployee}>
                     <div className="ad-field"><label>Name *</label>
                       <input className="ad-input" value={editName} onChange={(e) => setEditName(e.target.value)} disabled={editEmpBusy} required /></div>
@@ -2085,6 +2376,133 @@ export function AdminDashboard() {
             </div>
           )}
 
+          {/* ═══════════ URLAUBSANTRÄGE ════════════════════════════════════ */}
+          {activeSection === "leaveRequests" && (
+            <div className="ad-section">
+              <SectionTitle title="Urlaubanträge" />
+              <Card>
+                {leaveAdminEmployeeFilter != null && (
+                  <div className="ad-leave-filter-banner">
+                    <span>
+                      Anzeige gefiltert:{" "}
+                      <strong>
+                        {employees.find((e) => e.id === leaveAdminEmployeeFilter)?.name
+                          ?? `ID ${leaveAdminEmployeeFilter}`}
+                      </strong>
+                    </span>
+                    <button
+                      type="button"
+                      className="ad-btn ad-btn--sm ad-btn--ghost"
+                      onClick={() => setLeaveAdminEmployeeFilter(null)}
+                    >
+                      Alle Mitarbeiter
+                    </button>
+                  </div>
+                )}
+                <p className="ad-hint" style={{ marginBottom: "1rem" }}>
+                  Mitarbeiter stellen hier Urlaubs- oder Abwesenheitswünsche. Genehmigte Tage werden in deren
+                  Urlaubs-Karte (Resttage) berücksichtigt.
+                </p>
+                {leaveActionMsg && <p className="ad-success" style={{ marginBottom: "0.75rem" }}>{leaveActionMsg}</p>}
+                {leaveAdminError && <p className="ad-alert" role="alert" style={{ marginBottom: "0.75rem" }}>{leaveAdminError}</p>}
+                {leaveAdminLoading ? (
+                  <p className="ad-hint" style={{ padding: "2rem", textAlign: "center" }}>Wird geladen…</p>
+                ) : leaveAdminList.length === 0 ? (
+                  <p className="ad-empty">Keine Urlaubsanträge vorhanden.</p>
+                ) : (
+                  <div className="ad-table-wrap ad-table-wrap--scroll">
+                    <table className="ad-table">
+                      <thead>
+                        <tr>
+                          <th>Mitarbeiter</th>
+                          <th>Von</th>
+                          <th>Bis</th>
+                          <th>Tage</th>
+                          <th>Notiz</th>
+                          <th>Status</th>
+                          <th>Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leaveAdminList.map((row) => {
+                          const d0 = new Date(row.start_date + "T12:00:00");
+                          const d1 = new Date(row.end_date + "T12:00:00");
+                          const days = Math.round((d1 - d0) / 86400000) + 1;
+                          return (
+                            <tr key={row.id}>
+                              <td><strong>{row.employee_name ?? `#${row.employee_id}`}</strong></td>
+                              <td className="ad-mono">{d0.toLocaleDateString("de-DE")}</td>
+                              <td className="ad-mono">{d1.toLocaleDateString("de-DE")}</td>
+                              <td>{days}</td>
+                              <td>{row.note ?? "—"}</td>
+                              <td><ApprovalBadge status={row.status} /></td>
+                              <td>
+                                <div className="ad-actions">
+                                  {row.status === "pending" && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="ad-btn ad-btn--sm ad-btn--success"
+                                        onClick={() => handleApproveLeave(row.id)}
+                                        disabled={leaveActionBusy}
+                                      >
+                                        Annehmen
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="ad-btn ad-btn--sm ad-btn--danger"
+                                        onClick={() => {
+                                          setLeaveRejectingId(row.id);
+                                          setLeaveRejectReason("");
+                                          setLeaveAdminError(null);
+                                          setLeaveActionMsg(null);
+                                        }}
+                                        disabled={leaveActionBusy}
+                                      >
+                                        Ablehnen
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                                {leaveRejectingId === row.id && (
+                                  <form className="ad-inline-form" onSubmit={handleRejectLeaveSubmit}>
+                                    <input
+                                      className="ad-input"
+                                      placeholder="Ablehnungsgrund *"
+                                      value={leaveRejectReason}
+                                      onChange={(e) => setLeaveRejectReason(e.target.value)}
+                                      required
+                                      disabled={leaveActionBusy}
+                                    />
+                                    <div className="ad-actions">
+                                      <button type="submit" className="ad-btn ad-btn--sm ad-btn--danger"
+                                        disabled={leaveActionBusy || !leaveRejectReason.trim()}>
+                                        {leaveActionBusy ? "…" : "Bestätigen"}
+                                      </button>
+                                      <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost"
+                                        onClick={() => { setLeaveRejectingId(null); setLeaveRejectReason(""); }}>
+                                        Abbrechen
+                                      </button>
+                                    </div>
+                                  </form>
+                                )}
+                                {row.status === "rejected" && row.rejection_reason && (
+                                  <p className="ad-muted" style={{ fontSize: "0.78rem", marginTop: "0.35rem" }}>
+                                    Grund: {row.rejection_reason}
+                                  </p>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            </div>
+          )}
+
           {/* ═══════════ WISSENSDATENBANK ════════════════════════════════ */}
           {activeSection === "knowledge" && (
             <div className="ad-section">
@@ -2127,6 +2545,78 @@ export function AdminDashboard() {
 
         </main>
       </div>
+
+      {leaveModalEmpId != null && leaveModalEmp && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => { if (ev.target === ev.currentTarget && !leaveModalBusy) closeEmployeeLeaveModal(); }}
+        >
+          <div
+            className="ad-modal ad-modal--leave"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-leave-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ad-modal__header ad-modal__header--leave">
+              <div>
+                <h2 id="ad-leave-modal-title" className="ad-modal__title">Urlaub — {leaveModalEmp.name}</h2>
+                <p className="ad-modal__subtitle">
+                  Kalenderjahr {new Date().getFullYear()} · Zeitzone Europe/Berlin
+                </p>
+              </div>
+              <button
+                type="button"
+                className="ad-modal__close ad-modal__close--primary"
+                onClick={() => { if (!leaveModalBusy) closeEmployeeLeaveModal(); }}
+                aria-label="Schließen"
+              >
+                ×
+              </button>
+            </div>
+            <form className="ad-modal__body ad-modal__body--leave" onSubmit={handleSaveEmployeeLeaveModal}>
+              <AdminLeaveModalStatCards emp={leaveModalEmp} />
+              <p className="ad-modal__summary-line">
+                <strong>Kurzüberblick:</strong> noch buchbar <strong>{leaveModalEmp.leave_available ?? 0}</strong> von{" "}
+                <strong>{leaveModalEmp.leave_annual_resolved ?? 0}</strong> Tagen · ausstehend reserviert{" "}
+                <strong>{leaveModalEmp.leave_pending_days_this_year ?? 0}</strong> (
+                {leaveModalEmp.leave_pending_count ?? 0} Anträge)
+              </p>
+              <div className="ad-field ad-field--leave-annual">
+                <label htmlFor="ad-leave-modal-annual">Urlaubstage / Jahr (Soll)</label>
+                <input
+                  id="ad-leave-modal-annual"
+                  className="ad-input ad-input--emph"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Leer = System-Standard"
+                  value={leaveModalAnnual}
+                  onChange={(e) => setLeaveModalAnnual(e.target.value)}
+                  disabled={leaveModalBusy}
+                />
+              </div>
+              <button
+                type="button"
+                className="ad-leave-history-link"
+                onClick={() => openLeaveHistoryForEmployee(leaveModalEmp.id)}
+                disabled={leaveModalBusy}
+              >
+                <span aria-hidden>🔍</span> Urlaubsverlauf anzeigen
+              </button>
+              {leaveModalError && <p className="ad-alert" role="alert">{leaveModalError}</p>}
+              <div className="ad-modal__footer">
+                <button type="submit" className="ad-btn ad-btn--primary" disabled={leaveModalBusy}>
+                  {leaveModalBusy ? "…" : "Speichern"}
+                </button>
+                <button type="button" className="ad-btn ad-btn--ghost" onClick={closeEmployeeLeaveModal} disabled={leaveModalBusy}>
+                  Abbrechen
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ from app.config.database import get_db
 from app.models.attendance import Attendance
 from app.models.employee import Employee, EmployeeRole
 from app.models.location import WorkplaceLocation
+from app.services.leave_service import aggregate_leave_year_window, resolved_annual_quota
 from app.services.work_session_stats import get_global_session_stats
 from app.schemas.admin import (
     AdminAttendanceRow,
@@ -38,7 +39,18 @@ def _berlin_day_bounds_utc(day: date | None = None) -> tuple[datetime, datetime]
     return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
-def _employee_to_out(e: Employee) -> AdminEmployeeOut:
+def _empty_leave_agg() -> dict[str, int]:
+    return {"used_ytd": 0, "pending_ytd": 0, "pending_count": 0}
+
+
+def _employee_to_out(e: Employee, agg_row: dict[str, int] | None = None) -> AdminEmployeeOut:
+    row = agg_row or _empty_leave_agg()
+    annual = resolved_annual_quota(e)
+    used = row["used_ytd"]
+    pend_days = row["pending_ytd"]
+    pend_cnt = row["pending_count"]
+    remaining = max(0, annual - used)
+    available = max(0, annual - used - pend_days)
     return AdminEmployeeOut(
         id=e.id,
         name=e.name,
@@ -47,6 +59,13 @@ def _employee_to_out(e: Employee) -> AdminEmployeeOut:
         is_active=e.is_active,
         phone=e.phone,
         assigned_location_id=e.assigned_location_id,
+        annual_leave_days=e.annual_leave_days,
+        leave_annual_resolved=annual,
+        leave_used_this_year=used,
+        leave_pending_days_this_year=pend_days,
+        leave_pending_count=pend_cnt,
+        leave_remaining=remaining,
+        leave_available=available,
     )
 
 
@@ -56,7 +75,8 @@ def list_employees(
     _: Employee = Depends(require_admin),
 ):
     rows = db.scalars(select(Employee).order_by(Employee.id)).all()
-    return [_employee_to_out(e) for e in rows]
+    agg = aggregate_leave_year_window(db)
+    return [_employee_to_out(e, agg.get(e.id)) for e in rows]
 
 
 @router.post("/employees", response_model=AdminEmployeeOut, status_code=status.HTTP_201_CREATED)
@@ -83,11 +103,13 @@ def create_employee(
         email=email_norm,
         password=hash_password(body.password),
         role=EmployeeRole.employee,
+        annual_leave_days=body.annual_leave_days,
     )
     db.add(employee)
     db.commit()
     db.refresh(employee)
-    return _employee_to_out(employee)
+    agg = aggregate_leave_year_window(db)
+    return _employee_to_out(employee, agg.get(employee.id))
 
 
 @router.put("/employees/{employee_id}", response_model=AdminEmployeeOut)
@@ -120,9 +142,11 @@ def update_employee(
     emp.phone = body.phone.strip() if body.phone else None
     emp.assigned_location_id = body.assigned_location_id
     emp.is_active = body.is_active
+    emp.annual_leave_days = body.annual_leave_days
     db.commit()
     db.refresh(emp)
-    return _employee_to_out(emp)
+    agg = aggregate_leave_year_window(db)
+    return _employee_to_out(emp, agg.get(emp.id))
 
 
 @router.patch("/employees/{employee_id}/activate", response_model=AdminEmployeeOut)
@@ -137,7 +161,8 @@ def activate_employee(
     emp.is_active = True
     db.commit()
     db.refresh(emp)
-    return _employee_to_out(emp)
+    agg = aggregate_leave_year_window(db)
+    return _employee_to_out(emp, agg.get(emp.id))
 
 
 @router.patch("/employees/{employee_id}/deactivate", response_model=AdminEmployeeOut)
@@ -154,7 +179,8 @@ def deactivate_employee(
     emp.is_active = False
     db.commit()
     db.refresh(emp)
-    return _employee_to_out(emp)
+    agg = aggregate_leave_year_window(db)
+    return _employee_to_out(emp, agg.get(emp.id))
 
 
 @router.get("/locations", response_model=list[AdminLocationOut])

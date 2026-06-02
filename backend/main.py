@@ -13,6 +13,7 @@ from app.routes import attendance as attendance_routes
 from app.routes import auth as auth_routes
 from app.routes import employee as employee_routes
 from app.routes import approvals as approvals_routes
+from app.routes import leave_admin as leave_admin_routes
 from app.routes import planning as planning_routes
 from app.routes import reports as reports_routes
 from app.routes import ai as ai_routes
@@ -65,6 +66,8 @@ def _migrate_db() -> None:
                     "REFERENCES locations(id) ON DELETE SET NULL"
                 )
             )
+        if "annual_leave_days" not in existing:
+            conn.execute(text("ALTER TABLE employees ADD COLUMN annual_leave_days INTEGER"))
 
 
 app = FastAPI(lifespan=lifespan)
@@ -98,6 +101,7 @@ app.add_middleware(
 )
 
 app.include_router(admin_routes.router)
+app.include_router(leave_admin_routes.router)
 app.include_router(approvals_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(auth_routes.router)

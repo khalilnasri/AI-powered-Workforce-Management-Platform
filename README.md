@@ -25,6 +25,7 @@ Administrators manage employees, workplace locations, attendance records, and ex
 - **Geofence enforcement** — the server blocks punches outside the allowed radius: **during an active shift**, only the shift’s workplace counts; otherwise the employee’s **assigned** workplace; if neither is set, any registered location (legacy).
 - **Worked-time summary**: total hours, session list (open + closed), active-clock indicator
 - **Attendance log**: last 20 punches with timestamp, coordinates, and type
+- **Leave (Urlaub)**: request vacation/absence dates (one pending request at a time); dashboard card shows **remaining days** this year (default annual quota via `DEFAULT_ANNUAL_LEAVE_DAYS`, default 30) and approved usage in the Berlin calendar year.
 - Automatic redirect to login on token expiry (401 interceptor)
 
 ### Admin
@@ -33,6 +34,7 @@ Administrators manage employees, workplace locations, attendance records, and ex
 - **Attendance overview**: latest 500 punches across all employees
 - **Statistics dashboard**: total employees, currently checked-in count, total log entries
 - **Reports**: filter by employee and/or date range — download as **CSV** (Excel-compatible with BOM) or view as JSON
+- **Leave requests (Urlaubanträge)**: list employee leave requests; **approve** or **reject** (with reason); sidebar badge shows pending count
 - Role-based access guard: employees are redirected away from admin routes
 
 ---

@@ -12,6 +12,8 @@ const STATUS_URL       = "/attendance/status";
 const WORKED_TIME_URL  = "/attendance/worked-time";
 const MY_SHIFTS_URL    = "/planning/my-shifts";
 const MY_SESSIONS_URL  = "/attendance/my-sessions";
+const LEAVE_SUMMARY_URL = "/employee/leave-summary";
+const LEAVE_REQUESTS_URL = "/employee/leave-requests";
 
 const GEOFENCE_MESSAGE = "Outside allowed workplace area";
 
@@ -98,12 +100,21 @@ const IcoAI = () => (
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
   </svg>
 );
+const IcoVacation = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+    strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22v-6" />
+    <path d="M4.5 10a7.5 7.5 0 0 1 15 0Z" />
+    <path d="M2 10h20" />
+  </svg>
+);
 
 // ── Nav config ────────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
   { id: "checkin",  label: "Check-in / Out",  Icon: IcoCheckin  },
   { id: "worked",   label: "Worked Time",     Icon: IcoWorked   },
   { id: "shifts",   label: "Meine Schichten", Icon: IcoShifts   },
+  { id: "leave",    label: "Urlaub",          Icon: IcoVacation },
   { id: "sessions", label: "Meine Sessions",  Icon: IcoSessions },
   { id: "logs",     label: "Attendance Log",  Icon: IcoLogs     },
   { id: "ai",       label: "AI Assistant",    Icon: IcoAI       },
@@ -154,6 +165,20 @@ export function EmployeeDashboard() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError,   setSessionsError]   = useState(null);
 
+  // ── Urlaub ─────────────────────────────────────────────────────────────────
+  const [leaveSummary,        setLeaveSummary]        = useState(null);
+  const [leaveSummaryLoading, setLeaveSummaryLoading] = useState(true);
+  const [leaveSummaryError,   setLeaveSummaryError]   = useState(null);
+  const [myLeaveRequests,     setMyLeaveRequests]     = useState([]);
+  const [leaveListLoading,    setLeaveListLoading]    = useState(false);
+  const [leaveListError,      setLeaveListError]      = useState(null);
+  const [leaveStart,          setLeaveStart]          = useState("");
+  const [leaveEnd,            setLeaveEnd]            = useState("");
+  const [leaveNote,           setLeaveNote]           = useState("");
+  const [leaveFormBusy,       setLeaveFormBusy]       = useState(false);
+  const [leaveFormError,      setLeaveFormError]      = useState(null);
+  const [leaveFormSuccess,    setLeaveFormSuccess]    = useState(null);
+
   // ── AI Chat ───────────────────────────────────────────────────────────────
   // Jede Nachricht: { role: "user"|"assistant", content: string, sources: [] }
   const [aiMessages, setAiMessages] = useState([]);
@@ -193,9 +218,36 @@ export function EmployeeDashboard() {
       .finally(() => { setWorkedLoading(false); });
   }, []);
 
+  const fetchLeaveSummary = useCallback(() => {
+    setLeaveSummaryLoading(true);
+    setLeaveSummaryError(null);
+    return apiClient
+      .get(LEAVE_SUMMARY_URL)
+      .then((res) => { setLeaveSummary(res.data); })
+      .catch(() => {
+        setLeaveSummary(null);
+        setLeaveSummaryError("Urlaubsübersicht konnte nicht geladen werden.");
+      })
+      .finally(() => { setLeaveSummaryLoading(false); });
+  }, []);
+
+  const fetchMyLeaveRequests = useCallback(() => {
+    setLeaveListLoading(true);
+    setLeaveListError(null);
+    return apiClient
+      .get(LEAVE_REQUESTS_URL)
+      .then((res) => { setMyLeaveRequests(res.data ?? []); })
+      .catch(() => {
+        setMyLeaveRequests([]);
+        setLeaveListError("Anträge konnten nicht geladen werden.");
+      })
+      .finally(() => { setLeaveListLoading(false); });
+  }, []);
+
   useEffect(() => { fetchAttendanceLogs();   }, [fetchAttendanceLogs]);
   useEffect(() => { fetchAttendanceStatus(); }, [fetchAttendanceStatus]);
   useEffect(() => { fetchWorkedTime();       }, [fetchWorkedTime]);
+  useEffect(() => { fetchLeaveSummary();     }, [fetchLeaveSummary]);
 
   useEffect(() => {
     setShiftsLoading(true);
@@ -219,6 +271,10 @@ export function EmployeeDashboard() {
   useEffect(() => {
     if (activeTab === "sessions") fetchMySessions();
   }, [activeTab, fetchMySessions]);
+
+  useEffect(() => {
+    if (activeTab === "leave") fetchMyLeaveRequests();
+  }, [activeTab, fetchMyLeaveRequests]);
 
   // Automatisch zum Ende des Chats scrollen wenn neue Nachricht kommt
   useEffect(() => {
@@ -304,7 +360,8 @@ export function EmployeeDashboard() {
             setAreaStatus("inside");
             return fetchAttendanceLogs()
               .then(() => fetchAttendanceStatus())
-              .then(() => fetchWorkedTime());
+              .then(() => fetchWorkedTime())
+              .then(() => fetchLeaveSummary());
           })
           .catch((err) => {
             if (
@@ -332,6 +389,33 @@ export function EmployeeDashboard() {
       },
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
     );
+  }
+
+  async function handleLeaveSubmit(e) {
+    e.preventDefault();
+    setLeaveFormError(null);
+    setLeaveFormSuccess(null);
+    if (!leaveStart || !leaveEnd) {
+      setLeaveFormError("Von- und Bis-Datum angeben.");
+      return;
+    }
+    setLeaveFormBusy(true);
+    try {
+      await apiClient.post(LEAVE_REQUESTS_URL, {
+        start_date: leaveStart,
+        end_date: leaveEnd,
+        note: leaveNote.trim() || null,
+      });
+      setLeaveFormSuccess("Antrag wurde eingereicht — dein Admin wird informiert.");
+      setLeaveNote("");
+      await fetchLeaveSummary();
+      await fetchMyLeaveRequests();
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setLeaveFormError(typeof d === "string" ? d : "Antrag konnte nicht gesendet werden.");
+    } finally {
+      setLeaveFormBusy(false);
+    }
   }
 
   // ── Guards ────────────────────────────────────────────────────────────────
@@ -446,6 +530,28 @@ export function EmployeeDashboard() {
                   {workedLoading ? "…" : workedTime ? (workedTime.pending_count ?? 0) : "—"}
                 </div>
                 <div className="ed-stat-card__label">Ausstehend</div>
+              </div>
+            </div>
+            <div className="ed-stat-card ed-stat-card--vacation">
+              <div className="ed-stat-card__icon">🏖</div>
+              <div className="ed-stat-card__body">
+                <div className="ed-stat-card__value">
+                  {leaveSummaryLoading ? "…" : leaveSummary != null ? `${leaveSummary.available_days}` : "—"}
+                </div>
+                <div className="ed-stat-card__label">Urlaub noch buchbar ({new Date().getFullYear()})</div>
+                {leaveSummaryError ? (
+                  <span className="ed-stat-card__hint">{leaveSummaryError}</span>
+                ) : leaveSummary != null ? (
+                  <span className="ed-stat-card__hint">
+                    Soll {leaveSummary.annual_leave_days} · {leaveSummary.used_days_this_year} genommen · Rest{" "}
+                    {leaveSummary.remaining_days}
+                    {leaveSummary.pending_days_this_year > 0
+                      ? ` · ${leaveSummary.pending_days_this_year} Tage ausstehend reserviert`
+                      : leaveSummary.pending_requests > 0
+                        ? ` · ${leaveSummary.pending_requests} Antrag offen`
+                        : ""}
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
@@ -680,6 +786,103 @@ export function EmployeeDashboard() {
                       );
                     })}
                   </ul>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ═══ URLAUB ════════════════════════════════════════════════════ */}
+          {activeTab === "leave" && (
+            <div className="ed-section">
+              <div className="ed-section-title"><h2>Urlaub</h2></div>
+              <div className="ed-card" style={{ marginBottom: "1rem" }}>
+                <p className="ed-hint">
+                  Stelle einen Urlaubs- oder Abwesenheitswunsch. Dein Admin kann den Antrag unter
+                  „Urlaubanträge“ annehmen oder ablehnen.
+                </p>
+                {leaveSummary && !leaveSummaryLoading && !leaveSummaryError && (
+                  <p className="ed-hint" style={{ marginTop: "0.5rem" }}>
+                    <strong>{new Date().getFullYear()}:</strong> noch buchbar <strong>{leaveSummary.available_days}</strong> Tage
+                    (Soll {leaveSummary.annual_leave_days}, genommen {leaveSummary.used_days_this_year}, Rest{" "}
+                    {leaveSummary.remaining_days}
+                    {leaveSummary.pending_days_this_year > 0
+                      ? `, ausstehend reserviert ${leaveSummary.pending_days_this_year}`
+                      : ""}
+                    ).
+                  </p>
+                )}
+                <form className="ed-leave-form" onSubmit={handleLeaveSubmit}>
+                  <div className="ed-leave-form__row">
+                    <label>
+                      <span>Von *</span>
+                      <input
+                        type="date"
+                        value={leaveStart}
+                        onChange={(e) => setLeaveStart(e.target.value)}
+                        disabled={leaveFormBusy}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Bis *</span>
+                      <input
+                        type="date"
+                        value={leaveEnd}
+                        onChange={(e) => setLeaveEnd(e.target.value)}
+                        disabled={leaveFormBusy}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <label className="ed-leave-form__full">
+                    <span>Notiz (optional)</span>
+                    <textarea
+                      className="ed-textarea"
+                      rows={2}
+                      value={leaveNote}
+                      onChange={(e) => setLeaveNote(e.target.value)}
+                      disabled={leaveFormBusy}
+                      placeholder="z. B. Familienfeier, Umzug …"
+                    />
+                  </label>
+                  {leaveFormError && <p className="ed-alert" role="alert">{leaveFormError}</p>}
+                  {leaveFormSuccess && <p className="ed-success" role="status">{leaveFormSuccess}</p>}
+                  <button type="submit" className="ed-btn ed-btn--primary" disabled={leaveFormBusy}>
+                    {leaveFormBusy ? "Wird gesendet…" : "Antrag einreichen"}
+                  </button>
+                </form>
+              </div>
+              <div className="ed-card">
+                <h3 className="ed-card__subtitle">Meine Anträge</h3>
+                {leaveListLoading ? (
+                  <p className="ed-hint">Lädt…</p>
+                ) : leaveListError ? (
+                  <p className="ed-alert" role="alert">{leaveListError}</p>
+                ) : myLeaveRequests.length === 0 ? (
+                  <p className="ed-empty">Noch keine Anträge.</p>
+                ) : (
+                  <div className="ed-table-wrap">
+                    <table className="ed-table">
+                      <thead>
+                        <tr>
+                          <th>Von</th>
+                          <th>Bis</th>
+                          <th>Status</th>
+                          <th>Notiz</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {myLeaveRequests.map((r) => (
+                          <tr key={r.id}>
+                            <td>{new Date(r.start_date + "T12:00:00").toLocaleDateString("de-DE")}</td>
+                            <td>{new Date(r.end_date + "T12:00:00").toLocaleDateString("de-DE")}</td>
+                            <td><LeaveStatusBadge status={r.status} /></td>
+                            <td>{r.note ?? "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </div>
             </div>
@@ -958,6 +1161,13 @@ function formatTypeLabel(type) {
   if (t === "checkin")  return "Check-in";
   if (t === "checkout") return "Check-out";
   return type || "—";
+}
+
+function LeaveStatusBadge({ status }) {
+  const s = (status || "").toLowerCase();
+  if (s === "approved") return <span className="ed-badge ed-badge--green">Genehmigt</span>;
+  if (s === "rejected") return <span className="ed-badge ed-badge--red">Abgelehnt</span>;
+  return <span className="ed-badge ed-badge--orange">Ausstehend</span>;
 }
 
 function SessionStatusBadge({ status }) {
