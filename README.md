@@ -22,7 +22,7 @@ Administrators manage employees, workplace locations, attendance records, and ex
 
 ### Employee
 - GPS-based **Check-in / Check-out** directly from the browser
-- **Geofence enforcement** — the server blocks punches outside any registered workplace location
+- **Geofence enforcement** — the server blocks punches outside the allowed radius: **during an active shift**, only the shift’s workplace counts; otherwise the employee’s **assigned** workplace; if neither is set, any registered location (legacy).
 - **Worked-time summary**: total hours, session list (open + closed), active-clock indicator
 - **Attendance log**: last 20 punches with timestamp, coordinates, and type
 - Automatic redirect to login on token expiry (401 interceptor)

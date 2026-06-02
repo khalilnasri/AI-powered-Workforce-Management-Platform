@@ -13,7 +13,7 @@ const WORKED_TIME_URL  = "/attendance/worked-time";
 const MY_SHIFTS_URL    = "/planning/my-shifts";
 const MY_SESSIONS_URL  = "/attendance/my-sessions";
 
-const GEOFENCE_MESSAGE = "Outside allowed company area";
+const GEOFENCE_MESSAGE = "Outside allowed workplace area";
 
 // ── Markdown renderer (bold + line breaks only, no external dep) ──────────────
 function MdText({ text }) {
@@ -313,7 +313,11 @@ export function EmployeeDashboard() {
               typeof err.response.data.message === "string"
             ) {
               const msg = err.response.data.message;
-              setAttendanceError(msg);
+              setAttendanceError(
+                msg === GEOFENCE_MESSAGE
+                  ? "Außerhalb des erlaubten Arbeitsbereichs (nur Schichtstandort während der Schicht, sonst dein zugewiesener Standort)."
+                  : msg,
+              );
               setAreaStatus(msg === GEOFENCE_MESSAGE ? "outside" : null);
               return;
             }

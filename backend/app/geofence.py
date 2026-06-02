@@ -1,44 +1,141 @@
+"""Geofencing: punch must be inside allowed workplace radius(es)."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config.company_site import ALLOWED_RADIUS_METERS, COMPANY_LAT, COMPANY_LNG
+from app.models.employee import Employee
 from app.models.location import WorkplaceLocation
+from app.models.planning import ShiftPlan
 from app.utils.distance import haversine_meters
+
+# Keep in sync with frontend `GEOFENCE_MESSAGE` (EmployeeDashboard.jsx).
+OUTSIDE_WORKPLACE_MESSAGE = "Outside allowed workplace area"
 
 OUTSIDE_COMPANY_AREA = JSONResponse(
     status_code=400,
     content={
         "status": "error",
-        "message": "Outside allowed company area",
+        "message": OUTSIDE_WORKPLACE_MESSAGE,
+    },
+)
+
+NO_ASSIGNED_WORKPLACE = JSONResponse(
+    status_code=400,
+    content={
+        "status": "error",
+        "message": (
+            "Assigned workplace missing in database — contact admin. "
+            "Or: no shift location and no work site configured."
+        ),
     },
 )
 
 
-def geofence_block_response(db: Session, lat: float, lng: float) -> JSONResponse | None:
-    """
-    If coordinates are outside every allowed site, return an error response.
+def _berlin_now() -> datetime:
+    """Schichten und Kalendertag sind in der Regel in lokaler (Berlin) Zeit gedacht."""
+    return datetime.now(ZoneInfo("Europe/Berlin"))
 
-    When at least one row exists in `locations`, the user must be within
-    radius_meters of any site. If the table is empty, fall back to the legacy
-    single point from company_site (backward compatible).
-    """
-    locations = db.scalars(select(WorkplaceLocation)).all()
 
-    if not locations:
+def shift_covers_now(shift: ShiftPlan, now: datetime) -> bool:
+    """True, wenn ``now`` in [start, end] zur Schicht gehört (inkl. Nachtschicht über Mitternacht)."""
+    tz = now.tzinfo
+    d = shift.shift_date
+    start_dt = datetime.combine(d, shift.start_time, tzinfo=tz)
+    if shift.start_time <= shift.end_time:
+        end_dt = datetime.combine(d, shift.end_time, tzinfo=tz)
+        return start_dt <= now <= end_dt
+    end_dt = datetime.combine(d + timedelta(days=1), shift.end_time, tzinfo=tz)
+    return start_dt <= now <= end_dt
+
+
+def _active_shift_locations(db: Session, employee_id: int, now: datetime) -> list[WorkplaceLocation]:
+    """Standorte aus Schichten, die ``now`` abdecken und ein ``location_id`` haben."""
+    day = now.date()
+    yesterday = day - timedelta(days=1)
+    shifts = db.scalars(
+        select(ShiftPlan)
+        .where(ShiftPlan.employee_id == employee_id)
+        .where(ShiftPlan.shift_date.in_([yesterday, day]))
+    ).all()
+
+    seen: set[int] = set()
+    result: list[WorkplaceLocation] = []
+    for sh in shifts:
+        if sh.location_id is None:
+            continue
+        if not shift_covers_now(sh, now):
+            continue
+        loc = db.get(WorkplaceLocation, sh.location_id)
+        if loc is not None and loc.id not in seen:
+            seen.add(loc.id)
+            result.append(loc)
+    return result
+
+
+def resolve_allowed_workplace_locations(
+    db: Session,
+    employee: Employee,
+) -> list[WorkplaceLocation] | None:
+    """
+    Welche Standort-Radien für einen Stempel gelten.
+
+    - ``None``: keine Zeilen in ``locations`` → Legacy-Einzelfallback ``company_site``.
+    - ``[]``: Konfigurationsfehler (z. B. ``assigned_location_id`` ohne Datensatz).
+    - sonst: mindestens einen dieser Standorte treffen.
+    """
+    now = _berlin_now()
+    active_shift_locs = _active_shift_locations(db, employee.id, now)
+    if active_shift_locs:
+        return active_shift_locs
+
+    if employee.assigned_location_id is not None:
+        loc = db.get(WorkplaceLocation, employee.assigned_location_id)
+        if loc is None:
+            return []
+        return [loc]
+
+    all_locs = list(db.scalars(select(WorkplaceLocation)).all())
+    return all_locs if all_locs else None
+
+
+def geofence_block_response(
+    db: Session,
+    lat: float,
+    lng: float,
+    employee: Employee,
+) -> JSONResponse | None:
+    """
+    Wenn die Koordinaten außerhalb aller erlaubten Standorte liegen → Fehler-JSON.
+
+    Reihenfolge: aktive Schicht(en) mit Standort → sonst zugewiesener Mitarbeiter-Standort
+    → sonst jeder eingetragene Firmenstandort (Legacy).
+    """
+    allowed = resolve_allowed_workplace_locations(db, employee)
+
+    if allowed == []:
+        return NO_ASSIGNED_WORKPLACE
+
+    if allowed is None:
         distance_m = haversine_meters(lat, lng, COMPANY_LAT, COMPANY_LNG)
         if distance_m > ALLOWED_RADIUS_METERS:
             return OUTSIDE_COMPANY_AREA
         return None
 
-    for loc in locations:
+    for loc in allowed:
         if haversine_meters(lat, lng, loc.lat, loc.lng) <= float(loc.radius_meters):
             return None
     return OUTSIDE_COMPANY_AREA
 
 
 def company_geofence_block_response(lat: float, lng: float) -> JSONResponse | None:
-    """Legacy helper: single fixed site (no DB). Prefer geofence_block_response with db."""
+    """Legacy: ein fester Punkt ohne DB. Für Geofencing bitte ``geofence_block_response`` nutzen."""
     distance_m = haversine_meters(lat, lng, COMPANY_LAT, COMPANY_LNG)
     if distance_m > ALLOWED_RADIUS_METERS:
         return OUTSIDE_COMPANY_AREA

@@ -1,3 +1,6 @@
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,6 +25,17 @@ from app.schemas.admin import (
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_BERLIN = ZoneInfo("Europe/Berlin")
+
+
+def _berlin_day_bounds_utc(day: date | None = None) -> tuple[datetime, datetime]:
+    """Start (inkl.) und Ende (exkl.) des Kalendertags in Berlin, als aware UTC für DB-Vergleiche."""
+    if day is None:
+        day = datetime.now(_BERLIN).date()
+    start_local = datetime.combine(day, time.min, tzinfo=_BERLIN)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 def _employee_to_out(e: Employee) -> AdminEmployeeOut:
@@ -281,12 +295,22 @@ def statistics(
         db.scalar(select(func.count()).select_from(latest).where(latest.c.log_type == "checkin")) or 0
     )
 
+    day_start_utc, day_end_utc = _berlin_day_bounds_utc()
+    checked_rows = db.scalars(
+        select(Attendance.employee_id)
+        .where(Attendance.log_type == "checkin")
+        .where(Attendance.created_at >= day_start_utc)
+        .where(Attendance.created_at < day_end_utc)
+    ).all()
+    checked_in_today = len({eid for eid in checked_rows if eid is not None})
+
     ws_stats = get_global_session_stats(db)
 
     return AdminStatisticsResponse(
         total_employees=total_employees,
         total_logs=total_logs,
         active_now=active_now,
+        checked_in_today=checked_in_today,
         official_seconds=ws_stats["official_seconds"],
         official_hours=ws_stats["official_hours"],
         pending_count=ws_stats["pending_count"],

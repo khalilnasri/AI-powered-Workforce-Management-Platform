@@ -5,6 +5,7 @@ GET  /admin/approvals/work-sessions              – alle Sessions auflisten (ge
 PATCH /admin/approvals/work-sessions/{id}/approve – genehmigen
 PATCH /admin/approvals/work-sessions/{id}/reject  – ablehnen
 PATCH /admin/approvals/work-sessions/{id}/correct – korrigieren
+DELETE /admin/approvals/work-sessions/{id}       – Session-Eintrag löschen (Roh-Stempel bleiben)
 POST  /admin/approvals/backfill                   – alte Logs nachträglich als Sessions anlegen
 """
 
@@ -172,6 +173,27 @@ def correct_session(
     db.commit()
     db.refresh(session)
     return _build_response(session, db)
+
+
+@router.delete("/work-sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_work_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    """
+    Entfernt die WorkSession (Genehmigungs-/Buchungszeile).
+
+    Check-in-/Check-out-Rohdaten in ``attendance_logs`` bleiben erhalten;
+    ggf. kann ein Admin später erneut ``/backfill`` ausführen oder die Zeiten
+    manuell auswerten.
+    """
+    session = db.get(WorkSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
+    db.delete(session)
+    db.commit()
+    return None
 
 
 @router.post("/backfill", status_code=200)

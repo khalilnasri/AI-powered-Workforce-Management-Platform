@@ -4,10 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
-
-from sqlalchemy import text
 
 from app.config.database import IS_SQLITE, engine, init_db
 from app.routes import admin as admin_routes
@@ -40,18 +38,33 @@ async def lifespan(app: FastAPI):
 
 
 def _migrate_db() -> None:
-    """Fügt neue Spalten zur employees-Tabelle hinzu (idempotent via IF NOT EXISTS)."""
+    """
+    Fügt neue Spalten zur employees-Tabelle hinzu (idempotent).
+
+    ``ADD COLUMN IF NOT EXISTS`` braucht SQLite 3.35+; ältere Python-/SQLite-Bundles
+    werfen sonst einen Syntaxfehler. Spalten per Inspector prüfen und nur bei Bedarf
+    ALTER ausführen — funktioniert für PostgreSQL und SQLite.
+    """
+    insp = inspect(engine)
+    if not insp.has_table("employees"):
+        return
+    existing = {c["name"] for c in insp.get_columns("employees")}
     with engine.begin() as conn:
-        conn.execute(text(
-            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"
-        ))
-        conn.execute(text(
-            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS phone VARCHAR(50)"
-        ))
-        conn.execute(text(
-            "ALTER TABLE employees ADD COLUMN IF NOT EXISTS assigned_location_id INTEGER"
-            " REFERENCES locations(id) ON DELETE SET NULL"
-        ))
+        if "is_active" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE employees ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"
+                )
+            )
+        if "phone" not in existing:
+            conn.execute(text("ALTER TABLE employees ADD COLUMN phone VARCHAR(50)"))
+        if "assigned_location_id" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE employees ADD COLUMN assigned_location_id INTEGER "
+                    "REFERENCES locations(id) ON DELETE SET NULL"
+                )
+            )
 
 
 app = FastAPI(lifespan=lifespan)

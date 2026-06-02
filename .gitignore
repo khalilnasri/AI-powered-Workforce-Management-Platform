@@ -1,3 +1,6 @@
+# Lokaler Doppelklon / eingebettetes Repo (nicht versionieren)
+AI-powered-Workforce-Management-Platform/
+
 # Environment and secrets
 .env
 .env.*

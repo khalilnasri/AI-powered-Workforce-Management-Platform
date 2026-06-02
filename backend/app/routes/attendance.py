@@ -127,7 +127,7 @@ def check_in(
     db: Session = Depends(get_db),
     current_employee: Employee = Depends(get_current_employee),
 ):
-    blocked = geofence_block_response(db, body.lat, body.lng)
+    blocked = geofence_block_response(db, body.lat, body.lng, current_employee)
     if blocked is not None:
         return blocked
 
@@ -164,7 +164,7 @@ def check_out(
     db: Session = Depends(get_db),
     current_employee: Employee = Depends(get_current_employee),
 ):
-    blocked = geofence_block_response(db, body.lat, body.lng)
+    blocked = geofence_block_response(db, body.lat, body.lng, current_employee)
     if blocked is not None:
         return blocked
 

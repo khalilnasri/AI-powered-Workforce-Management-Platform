@@ -983,6 +983,35 @@ export function AdminDashboard() {
     } finally { setApprovalBusy(false); }
   }
 
+  async function handleDeleteSession(id, employeeLabel) {
+    if (
+      !confirm(
+        `Arbeitssession für „${employeeLabel}“ wirklich löschen?\nDie Roh-Stempel (Check-in / Check-out) bleiben in der Zeiterfassung erhalten.`,
+      )
+    ) {
+      return;
+    }
+    setApprovalBusy(true);
+    setApprovalError(null);
+    setApprovalSuccess(null);
+    try {
+      await apiClient.delete(`/admin/approvals/work-sessions/${id}`);
+      if (correctingSession?.id === id) {
+        setCorrectingSession(null);
+        setCorrectCheckin("");
+        setCorrectCheckout("");
+        setCorrectNote("");
+      }
+      setApprovalSuccess("Session gelöscht.");
+      await Promise.all([refreshAdminData(), fetchApprovals()]);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setApprovalError(typeof d === "string" ? d : "Löschen fehlgeschlagen.");
+    } finally {
+      setApprovalBusy(false);
+    }
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
   function locationName(id) {
     if (!id) return "—";
@@ -1082,13 +1111,13 @@ export function AdminDashboard() {
                 <StatCard
                   icon="check"
                   label="Heute eingestempelt"
-                  value={statistics?.active_now ?? 0}
+                  value={statistics?.checked_in_today ?? 0}
                   color="green"
                   sub={statistics?.total_employees
-                    ? `${Math.round((statistics.active_now / statistics.total_employees) * 100)}% der Belegschaft`
+                    ? `${statistics?.active_now ?? 0} aktuell eingestempelt · ${Math.round(((statistics.checked_in_today ?? 0) / statistics.total_employees) * 100)}% mit Stempel heute`
                     : "0% der Belegschaft"}
                   trend={8}
-                  sparkValues={[20, 35, 42, 38, 55, 48, statistics?.active_now ?? 0]}
+                  sparkValues={[20, 35, 42, 38, 55, 48, statistics?.checked_in_today ?? 0]}
                 />
                 <StatCard
                   icon="clock"
@@ -1979,6 +2008,16 @@ export function AdminDashboard() {
                                 <button className="ad-btn ad-btn--sm ad-btn--ghost"
                                   onClick={() => startCorrect(session)} disabled={approvalBusy}>
                                   Korrigieren
+                                </button>
+                                <button
+                                  type="button"
+                                  className="ad-btn ad-btn--sm ad-btn--danger"
+                                  onClick={() =>
+                                    handleDeleteSession(session.id, session.employee_name ?? `#${session.employee_id}`)
+                                  }
+                                  disabled={approvalBusy}
+                                >
+                                  Löschen
                                 </button>
                               </div>
                               {rejectingId === session.id && (

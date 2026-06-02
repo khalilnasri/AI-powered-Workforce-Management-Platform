@@ -70,7 +70,14 @@ class AdminAttendanceRow(BaseModel):
 class AdminStatisticsResponse(BaseModel):
     total_employees: int
     total_logs: int
-    active_now: int
+    active_now: int = Field(
+        ...,
+        description="Mitarbeiter, deren letzter Stempel ein Check-in ist (aktuell eingestempelt).",
+    )
+    checked_in_today: int = Field(
+        default=0,
+        description="Verschiedene Mitarbeiter mit mindestens einem Check-in heute (Europe/Berlin).",
+    )
     # WorkSession-basierte offizielle Arbeitszeiten
     official_seconds: int = 0
     official_hours: float = 0.0
