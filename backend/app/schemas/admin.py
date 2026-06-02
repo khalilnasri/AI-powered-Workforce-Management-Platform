@@ -11,6 +11,14 @@ class AdminEmployeeOut(BaseModel):
     is_active: bool = True
     phone: str | None = None
     assigned_location_id: int | None = None
+    # NULL = System-Standard (DEFAULT_ANNUAL_LEAVE_DAYS)
+    annual_leave_days: int | None = None
+    leave_annual_resolved: int = 0
+    leave_used_this_year: int = 0
+    leave_pending_days_this_year: int = 0
+    leave_pending_count: int = 0
+    leave_remaining: int = 0
+    leave_available: int = 0
 
 
 # Alias — wird in Routen als response_model genutzt
@@ -21,6 +29,7 @@ class AdminCreateEmployeeRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
+    annual_leave_days: int | None = Field(default=None, ge=0, le=365)
 
 
 class EmployeeUpdateRequest(BaseModel):
@@ -30,6 +39,7 @@ class EmployeeUpdateRequest(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     assigned_location_id: int | None = None
     is_active: bool = True
+    annual_leave_days: int | None = Field(default=None, ge=0, le=365)
 
 
 class AdminLocationOut(BaseModel):

@@ -29,3 +29,5 @@ class Employee(Base):
     phone = Column(String(50), nullable=True)
     # Zugewiesener Standort (optional, FK zu locations)
     assigned_location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
+    # Soll-Urlaubstage pro Kalenderjahr (NULL = System-Standard aus DEFAULT_ANNUAL_LEAVE_DAYS)
+    annual_leave_days = Column(Integer, nullable=True)
