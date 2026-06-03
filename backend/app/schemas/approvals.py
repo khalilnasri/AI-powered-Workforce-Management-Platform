@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -39,3 +39,17 @@ class WorkSessionCorrectRequest(BaseModel):
     checkin_time:  datetime
     checkout_time: datetime
     admin_note:    str | None = Field(default=None, max_length=1000)
+
+
+class OverdueCheckoutOut(BaseModel):
+    """Ein Mitarbeiter, der nach Schichtende noch eingecheckt ist."""
+    employee_id:    int
+    employee_name:  str | None = None
+    checkin_time:   datetime
+    checkin_log_id: int
+    shift_date:     date
+    shift_end:      datetime
+    location_id:    int | None = None
+    location_name:  str | None = None
+
+    model_config = {"from_attributes": True}
