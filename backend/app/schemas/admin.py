@@ -11,6 +11,13 @@ class AdminEmployeeOut(BaseModel):
     is_active: bool = True
     phone: str | None = None
     assigned_location_id: int | None = None
+    assigned_location_ids: list[int] = Field(default_factory=list)
+    employment_type: str = "full_time"
+    target_hours_month: int | None = None
+    hours_target_month: int = 160
+    hours_official_month: float = 0.0
+    hours_pending_month: float = 0.0
+    hours_diff_month: float = 0.0
     # NULL = System-Standard (DEFAULT_ANNUAL_LEAVE_DAYS)
     annual_leave_days: int | None = None
     leave_annual_resolved: int = 0
@@ -38,6 +45,9 @@ class EmployeeUpdateRequest(BaseModel):
     role: str = Field(..., pattern="^(admin|employee)$")
     phone: str | None = Field(default=None, max_length=50)
     assigned_location_id: int | None = None
+    assigned_location_ids: list[int] = Field(default_factory=list)
+    employment_type: str = Field(default="full_time", pattern="^(full_time|part_time_80|part_time_120|minijob)$")
+    target_hours_month: int | None = Field(default=None)
     is_active: bool = True
     annual_leave_days: int | None = Field(default=None, ge=0, le=365)
 

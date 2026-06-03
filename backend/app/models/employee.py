@@ -31,3 +31,13 @@ class Employee(Base):
     assigned_location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
     # Soll-Urlaubstage pro Kalenderjahr (NULL = System-Standard aus DEFAULT_ANNUAL_LEAVE_DAYS)
     annual_leave_days = Column(Integer, nullable=True)
+    # Beschäftigung / Monats-Soll-Stunden (Kalenderjahr Europe/Berlin — aktueller Monat)
+    # full_time | part_time_80 | part_time_120 | minijob
+    employment_type = Column(
+        String(30),
+        nullable=False,
+        default="full_time",
+        server_default="full_time",
+    )
+    # Nur sinnvoll bei minijob: Soll-Stunden pro Monat (1–200). Sonst NULL → Defaults aus employment_type.
+    target_hours_month = Column(Integer, nullable=True)

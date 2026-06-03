@@ -591,10 +591,18 @@ export function AdminDashboard() {
   const [editEmail, setEditEmail]       = useState("");
   const [editPhone, setEditPhone]       = useState("");
   const [editRole, setEditRole]         = useState("employee");
-  const [editLocationId, setEditLocationId] = useState("");
+  const [editLocationIds, setEditLocationIds] = useState([]);
+  const [editMonthlySollHours, setEditMonthlySollHours] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
   const [editEmpError, setEditEmpError] = useState(null);
   const [editEmpBusy, setEditEmpBusy]   = useState(false);
+
+  /** Stunden-Modal (WorkSessions laufender Monat) */
+  const [hoursModalOpen, setHoursModalOpen] = useState(false);
+  const [hoursModalRow, setHoursModalRow] = useState(null);
+  const [hoursModalSessions, setHoursModalSessions] = useState([]);
+  const [hoursModalLoading, setHoursModalLoading] = useState(false);
+  const [hoursModalError, setHoursModalError] = useState(null);
 
   /** Urlaub nur im Modal (Button „Urlaub“ in der Tabelle) */
   const [leaveModalEmpId, setLeaveModalEmpId] = useState(null);
@@ -800,14 +808,36 @@ export function AdminDashboard() {
   function handleEditEmployee(emp) {
     setEmpEditId(emp.id); setEditName(emp.name); setEditEmail(emp.email);
     setEditPhone(emp.phone || ""); setEditRole(emp.role);
-    setEditLocationId(emp.assigned_location_id ? String(emp.assigned_location_id) : "");
+    const locs = Array.isArray(emp.assigned_location_ids) && emp.assigned_location_ids.length
+      ? emp.assigned_location_ids.map((x) => String(x))
+      : (emp.assigned_location_id ? [String(emp.assigned_location_id)] : []);
+    setEditLocationIds(locs);
+    setEditMonthlySollHours(
+      emp.target_hours_month != null && emp.target_hours_month > 0
+        ? String(emp.target_hours_month)
+        : "",
+    );
     setEditIsActive(emp.is_active);
     setEditEmpError(null);
-    setTimeout(() => document.getElementById("emp-edit-anchor")?.scrollIntoView({ behavior: "smooth" }), 50);
   }
   function handleCancelEmpEdit() {
     setEmpEditId(null);
+    setEditLocationIds([]);
+    setEditMonthlySollHours("");
     setEditEmpError(null);
+  }
+
+  function toggleEditLocation(locationId) {
+    const s = String(locationId);
+    setEditLocationIds((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  }
+
+  function selectAllEditLocations() {
+    setEditLocationIds(locations.map((l) => String(l.id)));
+  }
+
+  function clearAllEditLocations() {
+    setEditLocationIds([]);
   }
 
   function openEmployeeLeaveModal(emp) {
@@ -856,7 +886,9 @@ export function AdminDashboard() {
         email: src.email,
         role: src.role,
         phone: (src.phone && String(src.phone).trim()) || null,
-        assigned_location_id: src.assigned_location_id ?? null,
+        assigned_location_ids: Array.isArray(src.assigned_location_ids) ? src.assigned_location_ids : [],
+        employment_type: src.employment_type || "full_time",
+        target_hours_month: src.target_hours_month ?? null,
         is_active: src.is_active,
         annual_leave_days,
       });
@@ -870,24 +902,79 @@ export function AdminDashboard() {
     }
   }
 
+  function closeHoursModal() {
+    setHoursModalOpen(false);
+    setHoursModalRow(null);
+    setHoursModalSessions([]);
+    setHoursModalError(null);
+  }
+
+  function calendarMonthRangeIso() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    const pad = (n) => String(n).padStart(2, "0");
+    const lastDay = new Date(y, m, 0).getDate();
+    return { start: `${y}-${pad(m)}-01`, end: `${y}-${pad(m)}-${pad(lastDay)}` };
+  }
+
+  async function openHoursModal(emp) {
+    setHoursModalRow(emp);
+    setHoursModalOpen(true);
+    setHoursModalLoading(true);
+    setHoursModalError(null);
+    setHoursModalSessions([]);
+    try {
+      const { start, end } = calendarMonthRangeIso();
+      const res = await apiClient.get(
+        `/admin/approvals/work-sessions?employee_id=${emp.id}&start_date=${start}&end_date=${end}`,
+      );
+      setHoursModalSessions(res.data ?? []);
+    } catch {
+      setHoursModalError("Arbeitszeiten konnten nicht geladen werden.");
+    } finally {
+      setHoursModalLoading(false);
+    }
+  }
+
   useEffect(() => {
-    if (leaveModalEmpId == null) return;
     const onKey = (ev) => {
-      if (ev.key === "Escape" && !leaveModalBusy) closeEmployeeLeaveModal();
+      if (ev.key !== "Escape") return;
+      if (empEditId != null && !editEmpBusy) handleCancelEmpEdit();
+      if (leaveModalEmpId != null && !leaveModalBusy) closeEmployeeLeaveModal();
+      if (hoursModalOpen && !hoursModalLoading) closeHoursModal();
     };
+    if (empEditId == null && leaveModalEmpId == null && !hoursModalOpen) return;
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [leaveModalEmpId, leaveModalBusy]);
+  }, [empEditId, editEmpBusy, leaveModalEmpId, leaveModalBusy, hoursModalOpen, hoursModalLoading]);
 
   async function handleUpdateEmployee(e) {
     e.preventDefault(); setEditEmpError(null); setEditEmpBusy(true);
     try {
       const profileSource = employees.find((x) => x.id === empEditId);
       const annualPreserved = profileSource?.annual_leave_days ?? null;
+      const employment_type = profileSource?.employment_type || "full_time";
+      let target_hours_month = null;
+      const t = editMonthlySollHours.trim();
+      if (t !== "") {
+        const n = Number(t);
+        if (!Number.isInteger(n) || n < 1 || n > 200) {
+          setEditEmpError("Soll-Stunden / Monat: ganze Zahl zwischen 1 und 200, oder leer für automatisches Standard-Soll.");
+          setEditEmpBusy(false);
+          return;
+        }
+        target_hours_month = n;
+      }
+      const assigned_location_ids = editLocationIds
+        .map((x) => Number(x))
+        .filter((n) => !Number.isNaN(n) && n > 0);
       await apiClient.put(`${EMPLOYEES_URL}/${empEditId}`, {
         name: editName.trim(), email: editEmail.trim(), role: editRole,
         phone: editPhone.trim() || null,
-        assigned_location_id: editLocationId ? Number(editLocationId) : null,
+        assigned_location_ids,
+        employment_type,
+        target_hours_month,
         is_active: editIsActive,
         annual_leave_days: annualPreserved,
       });
@@ -1272,6 +1359,10 @@ export function AdminDashboard() {
     if (!id) return "—";
     return locations.find((l) => l.id === id)?.name ?? `#${id}`;
   }
+  function locationNames(ids) {
+    if (!ids || !ids.length) return "—";
+    return ids.map((id) => locationName(id)).join(", ");
+  }
   const todayEmployees = useMemo(() => {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -1292,7 +1383,10 @@ export function AdminDashboard() {
       if (lastIn && lastOut && lastOut > lastIn) workSecs = (lastOut - lastIn) / 1000;
       else if (lastIn && active) workSecs = (Date.now() - lastIn) / 1000;
       const employee = employees.find((e) => e.email === emp.email);
-      const locId = employee?.assigned_location_id;
+      const locIds = employee?.assigned_location_ids?.length
+        ? employee.assigned_location_ids
+        : (employee?.assigned_location_id ? [employee.assigned_location_id] : []);
+      const locId = locIds[0];
       const loc = locId ? locations.find((l) => l.id === locId) : (locations.length > 0 ? locations[0] : null);
       return {
         name: emp.name,
@@ -1333,6 +1427,9 @@ export function AdminDashboard() {
 
   const leaveModalEmp =
     leaveModalEmpId != null ? employees.find((e) => e.id === leaveModalEmpId) ?? null : null;
+
+  const empEditEmp =
+    empEditId != null ? employees.find((e) => e.id === empEditId) ?? null : null;
 
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -1681,11 +1778,19 @@ export function AdminDashboard() {
                             </td>
                             <td>{row.phone || "—"}</td>
                             <td><Badge type={row.role} /></td>
-                            <td>{locationName(row.assigned_location_id)}</td>
+                            <td>{locationNames(row.assigned_location_ids)}</td>
                             <td><Badge type={row.is_active ? "active" : "inactive"} /></td>
                             <AdminEmployeeLeaveMeterCell row={row} />
                             <td>
                               <div className="ad-actions ad-actions--emp">
+                                <button
+                                  type="button"
+                                  className="ad-btn ad-btn--sm ad-btn--hours"
+                                  onClick={() => openHoursModal(row)}
+                                  title="Arbeitszeit diesen Monat"
+                                >
+                                  {(row.hours_official_month ?? 0).toFixed(1).replace(/\.0$/, "")}/{row.hours_target_month ?? 160}
+                                </button>
                                 <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
                                 <button
                                   type="button"
@@ -1707,47 +1812,6 @@ export function AdminDashboard() {
                   </table>
                 </div>
               </Card>
-
-              {/* Edit panel */}
-              {empEditId !== null && (
-                <Card id="emp-edit-anchor" className="ad-card--highlight">
-                  <h3 className="ad-form-title">
-                    Mitarbeiter bearbeiten — <em>{employees.find(e => e.id === empEditId)?.name}</em>
-                  </h3>
-                  <p className="ad-hint" style={{ margin: "-0.25rem 0 0.75rem", fontSize: "0.82rem" }}>
-                    Urlaub im Detail: Spalte <strong>Urlaub übrig</strong> oder Button <strong>Urlaub</strong> in der Zeile.
-                  </p>
-                  <form className="ad-form-grid" onSubmit={handleUpdateEmployee}>
-                    <div className="ad-field"><label>Name *</label>
-                      <input className="ad-input" value={editName} onChange={(e) => setEditName(e.target.value)} disabled={editEmpBusy} required /></div>
-                    <div className="ad-field"><label>E-Mail *</label>
-                      <input className="ad-input" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} disabled={editEmpBusy} required /></div>
-                    <div className="ad-field"><label>Telefon</label>
-                      <input className="ad-input" placeholder="+49 …" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} disabled={editEmpBusy} /></div>
-                    <div className="ad-field"><label>Rolle</label>
-                      <select className="ad-input ad-select" value={editRole} onChange={(e) => setEditRole(e.target.value)} disabled={editEmpBusy}>
-                        <option value="employee">employee</option>
-                        <option value="admin">admin</option>
-                      </select></div>
-                    <div className="ad-field"><label>Standort</label>
-                      <select className="ad-input ad-select" value={editLocationId} onChange={(e) => setEditLocationId(e.target.value)} disabled={editEmpBusy}>
-                        <option value="">— kein Standort —</option>
-                        {locations.map((l) => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
-                      </select></div>
-                    <div className="ad-field ad-field--checkbox">
-                      <label className="ad-checkbox-label">
-                        <input type="checkbox" checked={editIsActive} onChange={(e) => setEditIsActive(e.target.checked)} disabled={editEmpBusy} />
-                        Konto aktiv
-                      </label>
-                    </div>
-                    <div className="ad-field ad-field--actions" style={{gridColumn:"1/-1"}}>
-                      <button type="submit" className="ad-btn ad-btn--primary" disabled={editEmpBusy}>{editEmpBusy ? "…" : "Speichern"}</button>
-                      <button type="button" className="ad-btn ad-btn--ghost" onClick={handleCancelEmpEdit} disabled={editEmpBusy}>Abbrechen</button>
-                    </div>
-                  </form>
-                  {editEmpError && <p className="ad-alert">{editEmpError}</p>}
-                </Card>
-              )}
             </div>
           )}
 
@@ -2546,6 +2610,107 @@ export function AdminDashboard() {
         </main>
       </div>
 
+      {hoursModalOpen && hoursModalRow && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => { if (ev.target === ev.currentTarget && !hoursModalLoading) closeHoursModal(); }}
+        >
+          <div
+            className="ad-modal ad-modal--hours ad-modal--uniform"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-hours-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ad-modal__header ad-modal__header--leave">
+              <div>
+                <h2 id="ad-hours-modal-title" className="ad-modal__title">Arbeitszeit — {hoursModalRow.name}</h2>
+                <p className="ad-modal__subtitle">
+                  Kalendermonat {new Date().toLocaleString("de-DE", { month: "long", year: "numeric" })} · genehmigte Sessions
+                </p>
+              </div>
+              <button
+                type="button"
+                className="ad-modal__close ad-modal__close--primary"
+                onClick={() => { if (!hoursModalLoading) closeHoursModal(); }}
+                aria-label="Schließen"
+              >
+                ×
+              </button>
+            </div>
+            <div className="ad-modal__body ad-modal__body--leave ad-modal__body--fill">
+              <div className="ad-modal__stack-grow">
+                <div className="ad-hours-kpi-row">
+                <div className="ad-hours-kpi">
+                  <span className="ad-hours-kpi__label">Soll (Monat)</span>
+                  <strong className="ad-hours-kpi__val">{hoursModalRow.hours_target_month ?? 160} h</strong>
+                </div>
+                <div className="ad-hours-kpi">
+                  <span className="ad-hours-kpi__label">Genehmigt + korrigiert</span>
+                  <strong className="ad-hours-kpi__val">{(hoursModalRow.hours_official_month ?? 0).toFixed(2)} h</strong>
+                </div>
+                <div className="ad-hours-kpi">
+                  <span className="ad-hours-kpi__label">Ausstehend (Monat)</span>
+                  <strong className="ad-hours-kpi__val">{(hoursModalRow.hours_pending_month ?? 0).toFixed(2)} h</strong>
+                </div>
+                <div className={`ad-hours-kpi ad-hours-kpi--${(hoursModalRow.hours_diff_month ?? 0) > 0 ? "over" : (hoursModalRow.hours_diff_month ?? 0) < 0 ? "under" : "ok"}`}>
+                  <span className="ad-hours-kpi__label">Abweichung</span>
+                  <strong className="ad-hours-kpi__val">
+                    {(hoursModalRow.hours_diff_month ?? 0) > 0
+                      ? `+${(hoursModalRow.hours_diff_month ?? 0).toFixed(2)} h über Soll`
+                      : (hoursModalRow.hours_diff_month ?? 0) < 0
+                        ? `${(hoursModalRow.hours_diff_month ?? 0).toFixed(2)} h unter Soll`
+                        : "0 h — im Soll"}
+                  </strong>
+                </div>
+              </div>
+              <p className="ad-hint" style={{ marginBottom: "0.75rem" }}>
+                Beschäftigung: <strong>{hoursModalRow.employment_type || "full_time"}</strong>
+                {hoursModalRow.target_hours_month != null && hoursModalRow.target_hours_month > 0
+                  ? ` · konfiguriert ${hoursModalRow.target_hours_month} Std./Mon.`
+                  : null}
+              </p>
+              {hoursModalError && <p className="ad-alert" role="alert">{hoursModalError}</p>}
+              {hoursModalLoading ? (
+                <p className="ad-hint">Lade Schichten…</p>
+              ) : hoursModalSessions.length === 0 ? (
+                <p className="ad-empty">Keine Work-Sessions in diesem Monat.</p>
+              ) : (
+                <div className="ad-table-wrap ad-table-wrap--scroll ad-hours-modal__table-zone">
+                  <table className="ad-table ad-table--compact">
+                    <thead>
+                      <tr>
+                        <th>Check-in</th>
+                        <th>Check-out</th>
+                        <th>Stunden</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {hoursModalSessions.map((s) => (
+                        <tr key={s.id}>
+                          <td className="ad-mono">{formatTime(s.checkin_time)}</td>
+                          <td className="ad-mono">{s.checkout_time ? formatTime(s.checkout_time) : "—"}</td>
+                          <td>{(s.duration_seconds / 3600).toFixed(2)}</td>
+                          <td><ApprovalBadge status={s.status} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              </div>
+              <div className="ad-modal__footer ad-modal__footer--modal-end">
+                <button type="button" className="ad-btn ad-btn--ghost" onClick={closeHoursModal} disabled={hoursModalLoading}>
+                  Schließen
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {leaveModalEmpId != null && leaveModalEmp && (
         <div
           className="ad-modal-backdrop"
@@ -2553,7 +2718,7 @@ export function AdminDashboard() {
           onClick={(ev) => { if (ev.target === ev.currentTarget && !leaveModalBusy) closeEmployeeLeaveModal(); }}
         >
           <div
-            className="ad-modal ad-modal--leave"
+            className="ad-modal ad-modal--leave ad-modal--uniform"
             role="dialog"
             aria-modal="true"
             aria-labelledby="ad-leave-modal-title"
@@ -2575,42 +2740,257 @@ export function AdminDashboard() {
                 ×
               </button>
             </div>
-            <form className="ad-modal__body ad-modal__body--leave" onSubmit={handleSaveEmployeeLeaveModal}>
-              <AdminLeaveModalStatCards emp={leaveModalEmp} />
-              <p className="ad-modal__summary-line">
-                <strong>Kurzüberblick:</strong> noch buchbar <strong>{leaveModalEmp.leave_available ?? 0}</strong> von{" "}
-                <strong>{leaveModalEmp.leave_annual_resolved ?? 0}</strong> Tagen · ausstehend reserviert{" "}
-                <strong>{leaveModalEmp.leave_pending_days_this_year ?? 0}</strong> (
-                {leaveModalEmp.leave_pending_count ?? 0} Anträge)
-              </p>
-              <div className="ad-field ad-field--leave-annual">
-                <label htmlFor="ad-leave-modal-annual">Urlaubstage / Jahr (Soll)</label>
-                <input
-                  id="ad-leave-modal-annual"
-                  className="ad-input ad-input--emph"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="Leer = System-Standard"
-                  value={leaveModalAnnual}
-                  onChange={(e) => setLeaveModalAnnual(e.target.value)}
+            <form className="ad-modal__body ad-modal__body--leave ad-modal__body--fill" onSubmit={handleSaveEmployeeLeaveModal}>
+              <div className="ad-modal__stack-grow">
+                <AdminLeaveModalStatCards emp={leaveModalEmp} />
+                <p className="ad-modal__summary-line">
+                  <strong>Kurzüberblick:</strong> noch buchbar <strong>{leaveModalEmp.leave_available ?? 0}</strong> von{" "}
+                  <strong>{leaveModalEmp.leave_annual_resolved ?? 0}</strong> Tagen · ausstehend reserviert{" "}
+                  <strong>{leaveModalEmp.leave_pending_days_this_year ?? 0}</strong> (
+                  {leaveModalEmp.leave_pending_count ?? 0} Anträge)
+                </p>
+                <div className="ad-field ad-field--leave-annual">
+                  <label htmlFor="ad-leave-modal-annual">Urlaubstage / Jahr (Soll)</label>
+                  <input
+                    id="ad-leave-modal-annual"
+                    className="ad-input ad-input--emph"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="Leer = System-Standard"
+                    value={leaveModalAnnual}
+                    onChange={(e) => setLeaveModalAnnual(e.target.value)}
+                    disabled={leaveModalBusy}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="ad-leave-history-link"
+                  onClick={() => openLeaveHistoryForEmployee(leaveModalEmp.id)}
                   disabled={leaveModalBusy}
-                />
+                >
+                  <span aria-hidden>🔍</span> Urlaubsverlauf anzeigen
+                </button>
+                {leaveModalError && <p className="ad-alert" role="alert">{leaveModalError}</p>}
               </div>
-              <button
-                type="button"
-                className="ad-leave-history-link"
-                onClick={() => openLeaveHistoryForEmployee(leaveModalEmp.id)}
-                disabled={leaveModalBusy}
-              >
-                <span aria-hidden>🔍</span> Urlaubsverlauf anzeigen
-              </button>
-              {leaveModalError && <p className="ad-alert" role="alert">{leaveModalError}</p>}
-              <div className="ad-modal__footer">
+              <div className="ad-modal__footer ad-modal__footer--modal-end">
                 <button type="submit" className="ad-btn ad-btn--primary" disabled={leaveModalBusy}>
                   {leaveModalBusy ? "…" : "Speichern"}
                 </button>
                 <button type="button" className="ad-btn ad-btn--ghost" onClick={closeEmployeeLeaveModal} disabled={leaveModalBusy}>
                   Abbrechen
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {empEditId != null && empEditEmp && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => { if (ev.target === ev.currentTarget && !editEmpBusy) handleCancelEmpEdit(); }}
+        >
+          <div
+            className="ad-modal ad-modal--emp-edit ad-modal--uniform"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-emp-edit-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="ad-emp-edit__hero">
+              <button
+                type="button"
+                className="ad-emp-edit__dismiss"
+                onClick={() => { if (!editEmpBusy) handleCancelEmpEdit(); }}
+                disabled={editEmpBusy}
+                aria-label="Schließen"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+              <div className="ad-emp-edit__hero-inner">
+                <div className="ad-emp-edit__avatar" aria-hidden>
+                  {empEditEmp.name?.[0] ? empEditEmp.name[0].toUpperCase() : "?"}
+                </div>
+                <div className="ad-emp-edit__hero-text">
+                  <p className="ad-emp-edit__kicker">Mitarbeiter</p>
+                  <h2 id="ad-emp-edit-modal-title" className="ad-emp-edit__title">
+                    {empEditEmp.name}
+                  </h2>
+                  <p className="ad-emp-edit__lede">
+                    Urlaub über <strong>Urlaub</strong>
+                    <span className="ad-emp-edit__lede-dot" aria-hidden> · </span>
+                    Arbeitszeit über den <strong>Stunden</strong>-Button
+                  </p>
+                </div>
+              </div>
+            </header>
+
+            <form className="ad-emp-edit__form ad-modal__body--fill" onSubmit={handleUpdateEmployee}>
+              <div className="ad-modal__stack-grow ad-emp-edit__stack">
+              <section className="ad-emp-edit__block" aria-labelledby="ad-emp-edit-sec-stamm">
+                <h3 id="ad-emp-edit-sec-stamm" className="ad-emp-edit__block-title">Stammdaten</h3>
+                <div className="ad-emp-edit__grid">
+                  <div className="ad-emp-edit__field">
+                    <label className="ad-emp-edit__label" htmlFor="ad-emp-edit-name">Name</label>
+                    <input
+                      id="ad-emp-edit-name"
+                      className="ad-emp-edit__control"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      disabled={editEmpBusy}
+                      required
+                      autoComplete="name"
+                    />
+                  </div>
+                  <div className="ad-emp-edit__field">
+                    <label className="ad-emp-edit__label" htmlFor="ad-emp-edit-email">E-Mail</label>
+                    <input
+                      id="ad-emp-edit-email"
+                      className="ad-emp-edit__control"
+                      type="email"
+                      value={editEmail}
+                      onChange={(e) => setEditEmail(e.target.value)}
+                      disabled={editEmpBusy}
+                      required
+                      autoComplete="email"
+                    />
+                  </div>
+                  <div className="ad-emp-edit__field ad-emp-edit__field--span2">
+                    <label className="ad-emp-edit__label" htmlFor="ad-emp-edit-phone">Telefon</label>
+                    <input
+                      id="ad-emp-edit-phone"
+                      className="ad-emp-edit__control"
+                      placeholder="+49 …"
+                      value={editPhone}
+                      onChange={(e) => setEditPhone(e.target.value)}
+                      disabled={editEmpBusy}
+                      autoComplete="tel"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              <section className="ad-emp-edit__block" aria-labelledby="ad-emp-edit-sec-soll">
+                <h3 id="ad-emp-edit-sec-soll" className="ad-emp-edit__block-title">Monatssoll</h3>
+                <div className="ad-emp-edit__field">
+                  <label className="ad-emp-edit__label" htmlFor="ad-emp-edit-soll">Soll-Stunden / Monat <span className="ad-emp-edit__optional">optional</span></label>
+                  <input
+                    id="ad-emp-edit-soll"
+                    className="ad-emp-edit__control ad-emp-edit__control--mono"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="Leer lassen oder z. B. 120"
+                    value={editMonthlySollHours}
+                    onChange={(e) => setEditMonthlySollHours(e.target.value)}
+                    disabled={editEmpBusy}
+                  />
+                  <p className="ad-emp-edit__hint">
+                    Nur ausfüllen, wenn das Soll von den Standardwerten abweichen soll (1–200). Leer = automatisches Standard-Soll.
+                  </p>
+                </div>
+              </section>
+
+              <section className="ad-emp-edit__block" aria-labelledby="ad-emp-edit-sec-zugriff">
+                <h3 id="ad-emp-edit-sec-zugriff" className="ad-emp-edit__block-title">Zugriff &amp; Status</h3>
+                <div className="ad-emp-edit__row">
+                  <div className="ad-emp-edit__field ad-emp-edit__field--grow">
+                    <span className="ad-emp-edit__label" id="ad-emp-edit-role-lbl">Rolle</span>
+                    <div className="ad-emp-edit__segment" role="group" aria-labelledby="ad-emp-edit-role-lbl">
+                      <button
+                        type="button"
+                        className={`ad-emp-edit__segment-btn${editRole === "employee" ? " ad-emp-edit__segment-btn--active" : ""}`}
+                        aria-pressed={editRole === "employee"}
+                        disabled={editEmpBusy}
+                        onClick={() => setEditRole("employee")}
+                      >
+                        Mitarbeiter
+                      </button>
+                      <button
+                        type="button"
+                        className={`ad-emp-edit__segment-btn${editRole === "admin" ? " ad-emp-edit__segment-btn--active" : ""}`}
+                        aria-pressed={editRole === "admin"}
+                        disabled={editEmpBusy}
+                        onClick={() => setEditRole("admin")}
+                      >
+                        Admin
+                      </button>
+                    </div>
+                  </div>
+                  <label className="ad-emp-edit__switch-card">
+                    <input
+                      type="checkbox"
+                      checked={editIsActive}
+                      onChange={(e) => setEditIsActive(e.target.checked)}
+                      disabled={editEmpBusy}
+                    />
+                    <span className="ad-emp-edit__switch-card-body">
+                      <span className="ad-emp-edit__switch-card-title">Konto aktiv</span>
+                      <span className="ad-emp-edit__switch-card-desc">Login und App-Zugang</span>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section className="ad-emp-edit__block" aria-labelledby="ad-emp-edit-sec-orte">
+                <h3 id="ad-emp-edit-sec-orte" className="ad-emp-edit__block-title">Standorte</h3>
+                <p className="ad-emp-edit__hint ad-emp-edit__hint--tight">Standort antippen, um zu- oder abzuwählen.</p>
+                {locations.length > 0 && (
+                  <div className="ad-emp-edit__loc-bulk">
+                    <button
+                      type="button"
+                      className="ad-emp-edit__bulk-btn"
+                      onClick={selectAllEditLocations}
+                      disabled={editEmpBusy}
+                    >
+                      Alle auswählen
+                    </button>
+                    <button
+                      type="button"
+                      className="ad-emp-edit__bulk-btn"
+                      onClick={clearAllEditLocations}
+                      disabled={editEmpBusy}
+                    >
+                      Alle abwählen
+                    </button>
+                  </div>
+                )}
+                {locations.length === 0 ? (
+                  <p className="ad-emp-edit__empty">Zuerst unter „Standorte“ anlegen.</p>
+                ) : (
+                  <div className="ad-location-pick-grid ad-location-pick-grid--emp-edit" role="group" aria-label="Standorte auswählen">
+                    {locations.map((l) => {
+                      const idStr = String(l.id);
+                      const on = editLocationIds.includes(idStr);
+                      return (
+                        <button
+                          key={l.id}
+                          type="button"
+                          className={`ad-location-pick${on ? " ad-location-pick--on" : ""}`}
+                          aria-pressed={on}
+                          disabled={editEmpBusy}
+                          onClick={() => toggleEditLocation(l.id)}
+                        >
+                          <span className="ad-location-pick__check" aria-hidden>{on ? "✓" : ""}</span>
+                          <span className="ad-location-pick__name">{l.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {editEmpError && <p className="ad-alert ad-emp-edit__alert" role="alert">{editEmpError}</p>}
+              </div>
+
+              <div className="ad-emp-edit__footer">
+                <button type="button" className="ad-emp-edit__btn ad-emp-edit__btn--ghost" onClick={handleCancelEmpEdit} disabled={editEmpBusy}>
+                  Abbrechen
+                </button>
+                <button type="submit" className="ad-emp-edit__btn ad-emp-edit__btn--primary" disabled={editEmpBusy}>
+                  {editEmpBusy ? "Speichern …" : "Änderungen speichern"}
                 </button>
               </div>
             </form>

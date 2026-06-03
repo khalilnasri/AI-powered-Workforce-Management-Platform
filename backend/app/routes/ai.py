@@ -19,11 +19,13 @@ import logging
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.deps import get_current_employee
 from app.config.database import get_db
 from app.models.employee import Employee
+from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.location import WorkplaceLocation
 from app.services.openrouter_client import _MODEL, is_configured
 from app.services.rag_service import ask_reception_question
@@ -72,8 +74,16 @@ def ask_question(
     """
     # ── Standortname des Mitarbeiters auflösen ───────────────────────────────
     location_name: str | None = None
-    if current_employee.assigned_location_id:
-        location = db.get(WorkplaceLocation, current_employee.assigned_location_id)
+    loc_id = db.scalar(
+        select(EmployeeWorkLocation.location_id)
+        .where(EmployeeWorkLocation.employee_id == current_employee.id)
+        .order_by(EmployeeWorkLocation.location_id)
+        .limit(1)
+    )
+    if loc_id is None and current_employee.assigned_location_id:
+        loc_id = current_employee.assigned_location_id
+    if loc_id:
+        location = db.get(WorkplaceLocation, loc_id)
         if location:
             location_name = location.name
 
