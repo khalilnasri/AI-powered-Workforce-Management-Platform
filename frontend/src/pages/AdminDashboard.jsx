@@ -1,7 +1,7 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import axios from "axios";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { Link, useNavigate } from "react-router-dom";
 import { apiClient, clearToken } from "../apiClient";
@@ -48,6 +48,7 @@ const Ico = {
   brain:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>,
   sun:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>,
   umbrella: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22v-6"/><path d="M4.5 10a7.5 7.5 0 0 1 15 0Z"/><path d="M2 10h20"/></svg>,
+  warning:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
 };
 
 // ── Leaflet Helpers ─────────────────────────────────────────────────────────
@@ -627,12 +628,14 @@ export function AdminDashboard() {
   const [locRevGeocodeBusy, setLocRevGeocodeBusy] = useState(false);
 
   // ── Reports ───────────────────────────────────────────────────────────────
-  const [reportEmpId, setReportEmpId] = useState("");
-  const [reportStart, setReportStart] = useState("");
-  const [reportEnd, setReportEnd]     = useState("");
-  const [reportData, setReportData]   = useState(null);
-  const [reportBusy, setReportBusy]   = useState(false);
-  const [reportError, setReportError] = useState(null);
+  const [reportEmpId,       setReportEmpId]       = useState("");
+  const [reportStart,       setReportStart]       = useState("");
+  const [reportEnd,         setReportEnd]         = useState("");
+  const [reportData,        setReportData]        = useState(null);
+  const [reportBusy,        setReportBusy]        = useState(false);
+  const [reportError,       setReportError]       = useState(null);
+  const [reportQuickFilter, setReportQuickFilter] = useState("custom");
+  const [reportDateError,   setReportDateError]   = useState(null);
 
   // ── Badge counts ─────────────────────────────────────────────────────────
   const [pendingCount,   setPendingCount]   = useState(0);
@@ -668,6 +671,86 @@ export function AdminDashboard() {
   const [correctCheckin,    setCorrectCheckin]    = useState("");
   const [correctCheckout,   setCorrectCheckout]   = useState("");
   const [correctNote,       setCorrectNote]       = useState("");
+
+  // ── Überfällige Checkouts ─────────────────────────────────────────────────
+  const [overdueCheckouts,  setOverdueCheckouts]  = useState([]);
+  const [overdueLoading,    setOverdueLoading]    = useState(false);
+  const [overdueError,      setOverdueError]      = useState(null);
+  const [ignoredOverdueIds, setIgnoredOverdueIds] = useState(new Set());
+  const [approvalDateError, setApprovalDateError] = useState(null);
+
+  // ── Attendance-Filter ────────────────────────────────────────────────────
+  const [attendanceSearch,      setAttendanceSearch]      = useState("");
+  const [attendanceTypeFilter,  setAttendanceTypeFilter]  = useState("all");
+  const [attendanceDateFrom,    setAttendanceDateFrom]    = useState("");
+  const [attendanceDateTo,      setAttendanceDateTo]      = useState("");
+  const [attendanceSuggestOpen, setAttendanceSuggestOpen] = useState(false);
+  const [attendanceDateError,   setAttendanceDateError]   = useState(null);
+  const attSearchRef = useRef(null);
+
+  // Eindeutige Mitarbeiter aus den Attendance-Logs ableiten
+  const attendanceEmployees = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const row of attendance) {
+      if (!seen.has(row.employee_email)) {
+        seen.add(row.employee_email);
+        result.push({ name: row.employee_name, email: row.employee_email });
+      }
+    }
+    return result.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+  }, [attendance]);
+
+  // Vorschläge filtern (max. 8)
+  const attendanceSuggestions = useMemo(() => {
+    const q = attendanceSearch.trim().toLowerCase();
+    if (!q) return [];
+    return attendanceEmployees
+      .filter((e) =>
+        e.name?.toLowerCase().includes(q) ||
+        e.email?.toLowerCase().includes(q)
+      )
+      .slice(0, 8);
+  }, [attendanceEmployees, attendanceSearch]);
+
+  // Dropdown schließen wenn außerhalb geklickt wird
+  useEffect(() => {
+    function onClickOutside(e) {
+      if (attSearchRef.current && !attSearchRef.current.contains(e.target)) {
+        setAttendanceSuggestOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  // ── Gefilterte Attendance-Logs (Frontend-seitig) ─────────────────────────
+  const filteredAttendanceLogs = useMemo(() => {
+    const search = attendanceSearch.trim().toLowerCase();
+    const from   = attendanceDateFrom ? new Date(attendanceDateFrom) : null;
+    const to     = attendanceDateTo   ? new Date(attendanceDateTo + "T23:59:59") : null;
+    const dateRangeValid = !(from && to && from > to);
+
+    return attendance.filter((row) => {
+      if (search) {
+        const nameMatch  = row.employee_name?.toLowerCase().includes(search);
+        const emailMatch = row.employee_email?.toLowerCase().includes(search);
+        if (!nameMatch && !emailMatch) return false;
+      }
+      if (attendanceTypeFilter !== "all" && row.type !== attendanceTypeFilter) return false;
+      if (dateRangeValid && (from || to)) {
+        const ts = new Date(row.created_at);
+        if (from && ts < from) return false;
+        if (to   && ts > to)   return false;
+      }
+      return true;
+    });
+  }, [attendance, attendanceSearch, attendanceTypeFilter, attendanceDateFrom, attendanceDateTo]);
+
+  const visibleOverdueCheckouts = useMemo(
+    () => overdueCheckouts.filter((o) => !ignoredOverdueIds.has(o.checkin_log_id)),
+    [overdueCheckouts, ignoredOverdueIds],
+  );
 
   // ── Central refresh after approve/reject/correct ─────────────────────────
   // Refreshes statistics (KPI cards) and badge counts without touching
@@ -737,6 +820,7 @@ export function AdminDashboard() {
   useEffect(() => { refreshAll(); }, [refreshAll]);
 
   const fetchApprovals = useCallback(async () => {
+    if (approvalFilterStatus === "overdue") { setApprovals([]); return; }
     setApprovalsLoading(true);
     setApprovalsError(null);
     try {
@@ -755,9 +839,25 @@ export function AdminDashboard() {
     }
   }, [approvalFilterEmpId, approvalFilterStatus, approvalFilterStart, approvalFilterEnd]);
 
+  const fetchOverdueCheckouts = useCallback(async () => {
+    setOverdueLoading(true);
+    setOverdueError(null);
+    try {
+      const res = await apiClient.get("/admin/approvals/overdue-checkouts");
+      setOverdueCheckouts(res.data ?? []);
+    } catch {
+      setOverdueError("Ueberfaellige Checkouts konnten nicht geladen werden.");
+    } finally {
+      setOverdueLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (activeSection === "approvals") fetchApprovals();
-  }, [activeSection, fetchApprovals]);
+    if (activeSection === "approvals") {
+      fetchApprovals();
+      fetchOverdueCheckouts();
+    }
+  }, [activeSection, fetchApprovals, fetchOverdueCheckouts]);
 
   const fetchLeaveAdmin = useCallback(async () => {
     setLeaveAdminLoading(true);
@@ -1098,8 +1198,31 @@ export function AdminDashboard() {
   }
 
   // ── Report handlers ───────────────────────────────────────────────────────
+  function handleReportQuickFilter(filter) {
+    setReportQuickFilter(filter);
+    setReportDateError(null);
+    const today = new Date();
+    const pad   = (n) => String(n).padStart(2, "0");
+    const fmt   = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (filter === "today") {
+      const t = fmt(today);
+      setReportStart(t); setReportEnd(t);
+    } else if (filter === "week") {
+      const mon = new Date(today);
+      mon.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+      setReportStart(fmt(mon)); setReportEnd(fmt(today));
+    } else if (filter === "month") {
+      const first = new Date(today.getFullYear(), today.getMonth(), 1);
+      setReportStart(fmt(first)); setReportEnd(fmt(today));
+    } else if (filter === "lastMonth") {
+      const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const last  = new Date(today.getFullYear(), today.getMonth(), 0);
+      setReportStart(fmt(first)); setReportEnd(fmt(last));
+    }
+  }
+
   async function handleLoadReport(e) {
-    e.preventDefault(); setReportError(null); setReportBusy(true);
+    e.preventDefault(); setReportError(null); setReportDateError(null); setReportBusy(true);
     try {
       const p = new URLSearchParams();
       if (reportEmpId) p.append("employee_id", reportEmpId);
@@ -1312,6 +1435,32 @@ export function AdminDashboard() {
     } finally {
       setApprovalBusy(false);
     }
+  }
+
+  // ── Overdue-checkout handlers ─────────────────────────────────────────────
+  async function handleForceCheckout(checkinLogId) {
+    setApprovalBusy(true); setApprovalError(null); setApprovalSuccess(null);
+    try {
+      await apiClient.post(`/admin/approvals/overdue-checkouts/${checkinLogId}/force-checkout`);
+      setApprovalSuccess("Manueller Checkout wurde durchgeführt. Schicht ist jetzt ausstehend.");
+      await Promise.all([fetchOverdueCheckouts(), refreshAdminData()]);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setApprovalError(typeof d === "string" ? d : "Manueller Checkout fehlgeschlagen.");
+    } finally { setApprovalBusy(false); }
+  }
+
+  async function handleRemindEmployee(checkinLogId) {
+    try {
+      await apiClient.post(`/admin/approvals/overdue-checkouts/${checkinLogId}/remind`);
+      setApprovalSuccess("Erinnerung wurde vermerkt.");
+    } catch {
+      setApprovalError("Erinnerung fehlgeschlagen.");
+    }
+  }
+
+  function handleIgnoreOverdue(checkinLogId) {
+    setIgnoredOverdueIds((prev) => new Set([...prev, checkinLogId]));
   }
 
   async function handleApproveLeave(id) {
@@ -1819,15 +1968,177 @@ export function AdminDashboard() {
           {activeSection === "attendance" && (
             <div className="ad-section">
               <SectionTitle title="Zeiterfassung" />
+
+              {/* ── Filterleiste ── */}
               <Card>
-                <p className="ad-hint">Letzte 500 Stempelungen aller Mitarbeiter.</p>
+                <div className="ad-att-filters">
+                  <div className="ad-att-filters__row">
+                    {/* Autocomplete-Suche */}
+                    <div
+                      className="ad-att-filters__field ad-att-filters__field--search ad-att-ac"
+                      ref={attSearchRef}
+                    >
+                      <label className="ad-att-filters__label">Name / E-Mail</label>
+                      <div className="ad-att-filters__input-wrap">
+                        <span className="ad-att-filters__icon">{Ico.search}</span>
+                        <input
+                          className="ad-input ad-att-filters__input"
+                          type="text"
+                          placeholder="Mitarbeiter suchen…"
+                          value={attendanceSearch}
+                          autoComplete="off"
+                          onChange={(e) => {
+                            setAttendanceSearch(e.target.value);
+                            setAttendanceSuggestOpen(true);
+                          }}
+                          onFocus={() => {
+                            if (attendanceSearch.trim()) setAttendanceSuggestOpen(true);
+                          }}
+                        />
+                        {attendanceSearch && (
+                          <button
+                            type="button"
+                            className="ad-att-ac__clear"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setAttendanceSearch("");
+                              setAttendanceSuggestOpen(false);
+                            }}
+                          >
+                            {Ico.x}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Vorschlagsliste */}
+                      {attendanceSuggestOpen && attendanceSuggestions.length > 0 && (
+                        <ul className="ad-att-ac__list">
+                          {attendanceSuggestions.map((emp, i) => (
+                            <li
+                              key={i}
+                              className="ad-att-ac__item"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setAttendanceSearch(emp.name);
+                                setAttendanceSuggestOpen(false);
+                              }}
+                            >
+                              <span className="ad-att-ac__name">{emp.name}</span>
+                              <span className="ad-att-ac__email">{emp.email}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* Typ */}
+                    <div className="ad-att-filters__field">
+                      <label className="ad-att-filters__label">Typ</label>
+                      <select
+                        className="ad-input ad-att-filters__select"
+                        value={attendanceTypeFilter}
+                        onChange={(e) => setAttendanceTypeFilter(e.target.value)}
+                      >
+                        <option value="all">Alle</option>
+                        <option value="checkin">Check-In</option>
+                        <option value="checkout">Check-Out</option>
+                      </select>
+                    </div>
+
+                    {/* Datum von */}
+                    <div className="ad-att-filters__field">
+                      <label className="ad-att-filters__label">Datum von</label>
+                      <input
+                        className="ad-input ad-att-filters__input"
+                        type="date"
+                        value={attendanceDateFrom}
+                        onChange={(e) => {
+                          const newFrom = e.target.value;
+                          setAttendanceDateFrom(newFrom);
+                          // "bis" liegt vor neuem "von" → automatisch leeren
+                          if (newFrom && attendanceDateTo && attendanceDateTo < newFrom) {
+                            setAttendanceDateTo("");
+                          }
+                          setAttendanceDateError(null);
+                        }}
+                      />
+                    </div>
+
+                    {/* Datum bis */}
+                    <div className="ad-att-filters__field">
+                      <label className="ad-att-filters__label">Datum bis</label>
+                      <input
+                        className={`ad-input ad-att-filters__input${attendanceDateError ? " ad-input--error" : ""}`}
+                        type="date"
+                        value={attendanceDateTo}
+                        min={attendanceDateFrom || undefined}
+                        onChange={(e) => {
+                          const newTo = e.target.value;
+                          if (attendanceDateFrom && newTo && newTo < attendanceDateFrom) {
+                            setAttendanceDateError("Das Bis-Datum darf nicht vor dem Von-Datum liegen.");
+                          } else {
+                            setAttendanceDateError(null);
+                          }
+                          setAttendanceDateTo(newTo);
+                        }}
+                      />
+                    </div>
+
+                    {/* Zurücksetzen */}
+                    <div className="ad-att-filters__field ad-att-filters__field--reset">
+                      <label className="ad-att-filters__label">&nbsp;</label>
+                      <button
+                        className="ad-btn ad-btn--ghost ad-att-filters__reset"
+                        onClick={() => {
+                          setAttendanceSearch("");
+                          setAttendanceTypeFilter("all");
+                          setAttendanceDateFrom("");
+                          setAttendanceDateTo("");
+                          setAttendanceDateError(null);
+                          setAttendanceSuggestOpen(false);
+                        }}
+                      >
+                        {Ico.refresh} Zurücksetzen
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Fehlermeldung Datumsbereich */}
+                  {attendanceDateError && (
+                    <p className="ad-att-filters__date-error">{attendanceDateError}</p>
+                  )}
+
+                  {/* Zähler */}
+                  <p className="ad-att-filters__count">
+                    Zeige <strong>{filteredAttendanceLogs.length}</strong> von <strong>{attendance.length}</strong> Stempelungen
+                  </p>
+                </div>
+              </Card>
+
+              {/* ── Tabelle ── */}
+              <Card>
                 <div className="ad-table-wrap ad-table-wrap--scroll">
                   <table className="ad-table">
-                    <thead><tr><th>Mitarbeiter</th><th>E-Mail</th><th>Typ</th><th>Zeit</th><th>GPS</th></tr></thead>
+                    <thead>
+                      <tr>
+                        <th>Mitarbeiter</th>
+                        <th>E-Mail</th>
+                        <th>Typ</th>
+                        <th>Zeit</th>
+                        <th>GPS</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      {attendance.length === 0
-                        ? <tr><td colSpan={5} className="ad-empty">Keine Daten.</td></tr>
-                        : attendance.map((row, i) => (
+                      {filteredAttendanceLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="ad-empty">
+                            {attendance.length === 0
+                              ? "Keine Daten vorhanden."
+                              : "Keine Stempelungen für die ausgewählten Filter gefunden."}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAttendanceLogs.map((row, i) => (
                           <tr key={i}>
                             <td><strong>{row.employee_name}</strong></td>
                             <td>{row.employee_email}</td>
@@ -1835,7 +2146,8 @@ export function AdminDashboard() {
                             <td>{formatTime(row.created_at)}</td>
                             <td className="ad-mono">{row.lat?.toFixed(5)}, {row.lng?.toFixed(5)}</td>
                           </tr>
-                        ))}
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1978,9 +2290,68 @@ export function AdminDashboard() {
           {/* ═══════════ REPORTS ══════════════════════════════════════════ */}
           {activeSection === "reports" && (
             <div className="ad-section">
-              <SectionTitle title="Berichte &amp; Export" />
+              <SectionTitle title="Report Center" />
+
+              {/* Quick filters */}
+              <div className="ad-report-quick">
+                {[
+                  { key: "today",     label: "Heute" },
+                  { key: "week",      label: "Diese Woche" },
+                  { key: "month",     label: "Dieser Monat" },
+                  { key: "lastMonth", label: "Letzter Monat" },
+                  { key: "custom",    label: "Benutzerdefiniert" },
+                ].map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`ad-report-quick__btn${reportQuickFilter === key ? " ad-report-quick__btn--active" : ""}`}
+                    onClick={() => handleReportQuickFilter(key)}
+                    disabled={reportBusy}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* KPI cards */}
+              <div className="ad-report-kpi-grid">
+                <div className="ad-report-kpi ad-report-kpi--blue">
+                  <span className="ad-report-kpi__icon">{Ico.clock}</span>
+                  <div>
+                    <div className="ad-report-kpi__value">{reportData ? `${reportData.total_hours}h` : "—"}</div>
+                    <div className="ad-report-kpi__label">Gesamtstunden</div>
+                  </div>
+                </div>
+                <div className="ad-report-kpi ad-report-kpi--green">
+                  <span className="ad-report-kpi__icon">{Ico.check}</span>
+                  <div>
+                    <div className="ad-report-kpi__value">{reportData ? `${reportData.approved_total_hours}h` : "—"}</div>
+                    <div className="ad-report-kpi__label">Genehmigte Stunden</div>
+                  </div>
+                </div>
+                <div className="ad-report-kpi ad-report-kpi--orange">
+                  <span className="ad-report-kpi__icon">{Ico.bell}</span>
+                  <div>
+                    <div className="ad-report-kpi__value">
+                      {reportData
+                        ? reportData.employees.flatMap((e) => e.sessions).filter((s) => s.work_session_status === "pending").length
+                        : "—"}
+                    </div>
+                    <div className="ad-report-kpi__label">Ausstehende Sitzungen</div>
+                  </div>
+                </div>
+                <div className="ad-report-kpi ad-report-kpi--purple">
+                  <span className="ad-report-kpi__icon">{Ico.users}</span>
+                  <div>
+                    <div className="ad-report-kpi__value">{reportData ? reportData.employees.length : "—"}</div>
+                    <div className="ad-report-kpi__label">Mitarbeiter mit Einträgen</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Filter form */}
               <Card>
-                <form className="ad-report-filter" onSubmit={handleLoadReport}>
+                <form className="ad-report-form" onSubmit={handleLoadReport}>
                   <div className="ad-field">
                     <label>Mitarbeiter</label>
                     <select className="ad-input ad-select" value={reportEmpId} onChange={(e) => setReportEmpId(e.target.value)} disabled={reportBusy}>
@@ -1988,54 +2359,117 @@ export function AdminDashboard() {
                       {employees.map((e) => <option key={e.id} value={String(e.id)}>{e.name} ({e.email})</option>)}
                     </select>
                   </div>
-                  <div className="ad-field"><label>Von</label>
-                    <input className="ad-input" type="date" value={reportStart} onChange={(e) => setReportStart(e.target.value)} disabled={reportBusy} /></div>
-                  <div className="ad-field"><label>Bis</label>
-                    <input className="ad-input" type="date" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)} disabled={reportBusy} /></div>
+                  <div className="ad-field">
+                    <label>Von</label>
+                    <input
+                      className={`ad-input${reportDateError ? " ad-input--error" : ""}`}
+                      type="date"
+                      value={reportStart}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setReportStart(val);
+                        setReportQuickFilter("custom");
+                        if (reportEnd && val > reportEnd) {
+                          setReportEnd("");
+                          setReportDateError(null);
+                        } else {
+                          setReportDateError(null);
+                        }
+                      }}
+                      disabled={reportBusy}
+                    />
+                  </div>
+                  <div className="ad-field">
+                    <label>Bis</label>
+                    <input
+                      className={`ad-input${reportDateError ? " ad-input--error" : ""}`}
+                      type="date"
+                      value={reportEnd}
+                      min={reportStart || undefined}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setReportEnd(val);
+                        setReportQuickFilter("custom");
+                        if (reportStart && val < reportStart) {
+                          setReportDateError("Das Enddatum darf nicht vor dem Startdatum liegen.");
+                        } else {
+                          setReportDateError(null);
+                        }
+                      }}
+                      disabled={reportBusy}
+                    />
+                  </div>
                   <div className="ad-field ad-field--actions">
-                    <button type="submit" className="ad-btn ad-btn--primary" disabled={reportBusy}>
+                    <button type="submit" className="ad-btn ad-btn--primary" disabled={reportBusy || !!reportDateError}>
                       {reportBusy ? "Lädt…" : "Anzeigen"}
                     </button>
-                    <button type="button" className="ad-btn ad-btn--ghost" onClick={handleDownloadCsv} disabled={reportBusy}>
+                    <button
+                      type="button"
+                      className="ad-btn ad-btn--ghost"
+                      onClick={handleDownloadCsv}
+                      disabled={reportBusy || !!reportDateError || !reportData}
+                      title={!reportData ? "Zuerst Bericht laden" : "CSV herunterladen"}
+                    >
                       <span className="ad-btn__icon">{Ico.download}</span> CSV
                     </button>
                   </div>
                 </form>
+                {reportDateError && (
+                  <p className="ad-report-date-error">{reportDateError}</p>
+                )}
               </Card>
 
               {reportError && <p className="ad-alert" style={{marginTop:"1rem"}}>{reportError}</p>}
 
               {reportData && (
-                <>
-                  <div className="ad-stats-grid" style={{marginTop:"1.25rem"}}>
-                    <StatCard icon="clock"  label="Gesamtstunden"  value={`${reportData.total_hours}h`} color="blue" />
-                    <StatCard icon="check"  label="Schichten"      value={reportData.session_count}      color="green" />
-                    <StatCard icon="users"  label="Mitarbeiter"    value={reportData.employees.length}    color="purple" />
+                <Card style={{marginTop:"1.25rem"}}>
+                  <div className="ad-table-wrap ad-table-wrap--scroll">
+                    <table className="ad-table">
+                      <thead>
+                        <tr>
+                          <th>Mitarbeiter</th>
+                          <th>E-Mail</th>
+                          <th>Check-in</th>
+                          <th>Check-out</th>
+                          <th>Dauer</th>
+                          <th>Schicht-Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reportData.employees.every((e) => e.sessions.length === 0) ? (
+                          <tr><td colSpan={6} className="ad-empty">Keine Berichtsdaten für diesen Zeitraum gefunden.</td></tr>
+                        ) : (
+                          reportData.employees.flatMap((emp) =>
+                            emp.sessions.map((s, i) => (
+                              <tr key={`${emp.employee_id}-${i}`}>
+                                <td><strong>{emp.employee_name}</strong></td>
+                                <td className="ad-muted">{emp.employee_email}</td>
+                                <td className="ad-mono">{formatTime(s.checkin)}</td>
+                                <td className="ad-mono">{s.checkout ? formatTime(s.checkout) : "—"}</td>
+                                <td>
+                                  <strong>{s.duration_hours}h</strong>{" "}
+                                  <small className="ad-muted">({formatSeconds(s.duration_seconds)})</small>
+                                </td>
+                                <td>
+                                  <span className={`ad-report-status ad-report-status--${s.work_session_status ?? s.status}`}>
+                                    {{
+                                      pending:   "Ausstehend",
+                                      approved:  "Genehmigt",
+                                      rejected:  "Abgelehnt",
+                                      corrected: "Korrigiert",
+                                      open:      "Offen",
+                                      closed:    "Geschlossen",
+                                    }[s.work_session_status ?? s.status] ?? (s.work_session_status ?? s.status)}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )
+                        )}
+                      </tbody>
+                    </table>
                   </div>
-                  <Card style={{marginTop:"1.25rem"}}>
-                    <div className="ad-table-wrap ad-table-wrap--scroll">
-                      <table className="ad-table">
-                        <thead><tr><th>Mitarbeiter</th><th>E-Mail</th><th>Check-in</th><th>Check-out</th><th>Dauer</th><th>Status</th></tr></thead>
-                        <tbody>
-                          {reportData.employees.every((e) => e.sessions.length === 0)
-                            ? <tr><td colSpan={6} className="ad-empty">Keine Daten für den gewählten Zeitraum.</td></tr>
-                            : reportData.employees.flatMap((emp) =>
-                                emp.sessions.map((s, i) => (
-                                  <tr key={`${emp.employee_id}-${i}`}>
-                                    <td><strong>{emp.employee_name}</strong></td>
-                                    <td>{emp.employee_email}</td>
-                                    <td className="ad-mono">{formatTime(s.checkin)}</td>
-                                    <td className="ad-mono">{s.checkout ? formatTime(s.checkout) : "—"}</td>
-                                    <td><strong>{s.duration_hours}h</strong> <small className="ad-muted">({formatSeconds(s.duration_seconds)})</small></td>
-                                    <td><Badge type={s.status === "open" ? "open" : "closed"} /></td>
-                                  </tr>
-                                ))
-                              )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </Card>
-                </>
+                </Card>
               )}
             </div>
           )}
@@ -2270,9 +2704,33 @@ export function AdminDashboard() {
             <div className="ad-section">
               <SectionTitle title="Genehmigungen" />
 
+              {/* Overdue warning banner */}
+              {visibleOverdueCheckouts.length > 0 && approvalFilterStatus !== "overdue" && (
+                <div className="ad-overdue-banner">
+                  <span className="ad-overdue-banner__icon">{Ico.warning}</span>
+                  <span className="ad-overdue-banner__text">
+                    <strong>{visibleOverdueCheckouts.length}</strong>{" "}
+                    {visibleOverdueCheckouts.length === 1
+                      ? "Mitarbeiter hat"
+                      : "Mitarbeiter haben"}{" "}
+                    nach Schichtende noch nicht ausgecheckt.
+                  </span>
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn--sm ad-btn--warning"
+                    onClick={() => setApprovalFilterStatus("overdue")}
+                  >
+                    Anzeigen
+                  </button>
+                </div>
+              )}
+
               {/* Filter */}
               <Card>
-                <form className="ad-report-filter" onSubmit={(e) => { e.preventDefault(); fetchApprovals(); }}>
+                <form
+                  className="ad-report-filter"
+                  onSubmit={(e) => { e.preventDefault(); if (!approvalDateError) fetchApprovals(); }}
+                >
                   <div className="ad-field">
                     <label>Mitarbeiter</label>
                     <select className="ad-input ad-select" value={approvalFilterEmpId}
@@ -2288,119 +2746,223 @@ export function AdminDashboard() {
                     <select className="ad-input ad-select" value={approvalFilterStatus}
                       onChange={(e) => setApprovalFilterStatus(e.target.value)} disabled={approvalsLoading}>
                       <option value="">— Alle —</option>
-                      <option value="pending">Ausstehend</option>
+                      <option value="pending">Offen / Ausstehend</option>
                       <option value="approved">Genehmigt</option>
-                      <option value="rejected">Abgelehnt</option>
                       <option value="corrected">Korrigiert</option>
+                      <option value="rejected">Abgelehnt</option>
+                      <option value="overdue">Überfälliger Checkout</option>
                     </select>
                   </div>
                   <div className="ad-field">
                     <label>Von</label>
-                    <input className="ad-input" type="date" value={approvalFilterStart}
-                      onChange={(e) => setApprovalFilterStart(e.target.value)} disabled={approvalsLoading} />
+                    <input
+                      className={`ad-input${approvalDateError ? " ad-input--error" : ""}`}
+                      type="date"
+                      value={approvalFilterStart}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setApprovalFilterStart(val);
+                        if (approvalFilterEnd && val > approvalFilterEnd) {
+                          setApprovalFilterEnd("");
+                          setApprovalDateError(null);
+                        } else {
+                          setApprovalDateError(null);
+                        }
+                      }}
+                      disabled={approvalsLoading}
+                    />
                   </div>
                   <div className="ad-field">
                     <label>Bis</label>
-                    <input className="ad-input" type="date" value={approvalFilterEnd}
-                      onChange={(e) => setApprovalFilterEnd(e.target.value)} disabled={approvalsLoading} />
+                    <input
+                      className={`ad-input${approvalDateError ? " ad-input--error" : ""}`}
+                      type="date"
+                      value={approvalFilterEnd}
+                      min={approvalFilterStart || undefined}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setApprovalFilterEnd(val);
+                        if (approvalFilterStart && val < approvalFilterStart) {
+                          setApprovalDateError("Das Bis-Datum darf nicht vor dem Von-Datum liegen.");
+                        } else {
+                          setApprovalDateError(null);
+                        }
+                      }}
+                      disabled={approvalsLoading}
+                    />
                   </div>
                   <div className="ad-field ad-field--actions">
-                    <button type="submit" className="ad-btn ad-btn--primary" disabled={approvalsLoading}>
+                    <button
+                      type="submit"
+                      className="ad-btn ad-btn--primary"
+                      disabled={approvalsLoading || !!approvalDateError}
+                    >
                       {approvalsLoading ? "Lädt…" : "Filtern"}
                     </button>
                   </div>
                 </form>
+                {approvalDateError && (
+                  <p className="ad-report-date-error">{approvalDateError}</p>
+                )}
               </Card>
 
               {approvalSuccess && <p className="ad-success" style={{ marginTop: "1rem" }}>{approvalSuccess}</p>}
               {approvalError   && <p className="ad-alert"   style={{ marginTop: "1rem" }}>{approvalError}</p>}
 
-              {/* Sessions table */}
-              <Card style={{ marginTop: "1.25rem" }}>
-                {approvalsLoading ? (
-                  <p className="ad-hint" style={{ padding: "2rem", textAlign: "center" }}>Wird geladen…</p>
-                ) : approvals.length === 0 ? (
-                  <p className="ad-empty">Keine Einträge gefunden.</p>
-                ) : (
-                  <div className="ad-table-wrap ad-table-wrap--scroll">
-                    <table className="ad-table">
-                      <thead>
-                        <tr>
-                          <th>Mitarbeiter</th>
-                          <th>Check-in</th>
-                          <th>Check-out</th>
-                          <th>Dauer</th>
-                          <th>Status</th>
-                          <th>Aktionen</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {approvals.map((session) => (
-                          <tr key={session.id}>
-                            <td><strong>{session.employee_name ?? `#${session.employee_id}`}</strong></td>
-                            <td className="ad-mono">{formatTime(session.checkin_time)}</td>
-                            <td className="ad-mono">{session.checkout_time ? formatTime(session.checkout_time) : "—"}</td>
-                            <td>
-                              <strong>{(session.duration_seconds / 3600).toFixed(2)}h</strong>
-                              {" "}<small className="ad-muted">({formatSeconds(session.duration_seconds)})</small>
-                            </td>
-                            <td><ApprovalBadge status={session.status} /></td>
-                            <td>
-                              <div className="ad-actions">
-                                {session.status === "pending" && (
-                                  <>
-                                    <button className="ad-btn ad-btn--sm ad-btn--success"
-                                      onClick={() => handleApproveSession(session.id)} disabled={approvalBusy}>
-                                      Genehmigen
-                                    </button>
-                                    <button className="ad-btn ad-btn--sm ad-btn--danger"
-                                      onClick={() => { setRejectingId(session.id); setRejectReason(""); setApprovalError(null); setApprovalSuccess(null); }}
-                                      disabled={approvalBusy}>
-                                      Ablehnen
-                                    </button>
-                                  </>
-                                )}
-                                <button className="ad-btn ad-btn--sm ad-btn--ghost"
-                                  onClick={() => startCorrect(session)} disabled={approvalBusy}>
-                                  Korrigieren
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ad-btn ad-btn--sm ad-btn--danger"
-                                  onClick={() =>
-                                    handleDeleteSession(session.id, session.employee_name ?? `#${session.employee_id}`)
-                                  }
-                                  disabled={approvalBusy}
-                                >
-                                  Löschen
-                                </button>
-                              </div>
-                              {rejectingId === session.id && (
-                                <form className="ad-inline-form" onSubmit={handleRejectSession}>
-                                  <input className="ad-input" placeholder="Ablehnungsgrund *"
-                                    value={rejectReason}
-                                    onChange={(e) => setRejectReason(e.target.value)}
-                                    required disabled={approvalBusy} />
-                                  <div className="ad-actions">
-                                    <button type="submit" className="ad-btn ad-btn--sm ad-btn--danger"
-                                      disabled={approvalBusy || !rejectReason.trim()}>
-                                      {approvalBusy ? "…" : "Bestätigen"}
-                                    </button>
-                                    <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost"
-                                      onClick={() => { setRejectingId(null); setRejectReason(""); }}>
-                                      Abbrechen
-                                    </button>
-                                  </div>
-                                </form>
-                              )}
-                            </td>
+              {/* Overdue checkouts table */}
+              {approvalFilterStatus === "overdue" ? (
+                <Card style={{ marginTop: "1.25rem" }}>
+                  {overdueLoading ? (
+                    <p className="ad-hint" style={{ padding: "2rem", textAlign: "center" }}>Wird geladen…</p>
+                  ) : overdueError ? (
+                    <p className="ad-alert">{overdueError}</p>
+                  ) : visibleOverdueCheckouts.length === 0 ? (
+                    <p className="ad-empty">Keine überfälligen Checkouts gefunden.</p>
+                  ) : (
+                    <div className="ad-table-wrap ad-table-wrap--scroll">
+                      <table className="ad-table">
+                        <thead>
+                          <tr>
+                            <th>Mitarbeiter</th>
+                            <th>Check-in</th>
+                            <th>Schichtende</th>
+                            <th>Überfällig seit</th>
+                            <th>Standort</th>
+                            <th>Aktionen</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Card>
+                        </thead>
+                        <tbody>
+                          {visibleOverdueCheckouts.map((item) => (
+                            <tr key={item.checkin_log_id} className="ad-overdue-row">
+                              <td><strong>{item.employee_name ?? `#${item.employee_id}`}</strong></td>
+                              <td className="ad-mono">{formatTime(item.checkin_time)}</td>
+                              <td className="ad-mono">{formatTime(item.shift_end)}</td>
+                              <td>
+                                <span className="ad-overdue-badge">
+                                  {overdueFor(item.shift_end)}
+                                </span>
+                              </td>
+                              <td>{item.location_name ?? "—"}</td>
+                              <td>
+                                <div className="ad-actions">
+                                  <button
+                                    className="ad-btn ad-btn--sm ad-btn--ghost"
+                                    onClick={() => handleRemindEmployee(item.checkin_log_id)}
+                                    disabled={approvalBusy}
+                                  >
+                                    Erinnern
+                                  </button>
+                                  <button
+                                    className="ad-btn ad-btn--sm ad-btn--warning"
+                                    onClick={() => handleForceCheckout(item.checkin_log_id)}
+                                    disabled={approvalBusy}
+                                  >
+                                    Manuell auschecken
+                                  </button>
+                                  <button
+                                    className="ad-btn ad-btn--sm ad-btn--danger"
+                                    onClick={() => handleIgnoreOverdue(item.checkin_log_id)}
+                                    disabled={approvalBusy}
+                                  >
+                                    Ignorieren
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Card>
+              ) : (
+                /* Work sessions table */
+                <Card style={{ marginTop: "1.25rem" }}>
+                  {approvalsLoading ? (
+                    <p className="ad-hint" style={{ padding: "2rem", textAlign: "center" }}>Wird geladen…</p>
+                  ) : approvals.length === 0 ? (
+                    <p className="ad-empty">Keine Einträge gefunden.</p>
+                  ) : (
+                    <div className="ad-table-wrap ad-table-wrap--scroll">
+                      <table className="ad-table">
+                        <thead>
+                          <tr>
+                            <th>Mitarbeiter</th>
+                            <th>Check-in</th>
+                            <th>Check-out</th>
+                            <th>Dauer</th>
+                            <th>Status</th>
+                            <th>Aktionen</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {approvals.map((session) => (
+                            <tr key={session.id}>
+                              <td><strong>{session.employee_name ?? `#${session.employee_id}`}</strong></td>
+                              <td className="ad-mono">{formatTime(session.checkin_time)}</td>
+                              <td className="ad-mono">{session.checkout_time ? formatTime(session.checkout_time) : "—"}</td>
+                              <td>
+                                <strong>{(session.duration_seconds / 3600).toFixed(2)}h</strong>
+                                {" "}<small className="ad-muted">({formatSeconds(session.duration_seconds)})</small>
+                              </td>
+                              <td><ApprovalBadge status={session.status} /></td>
+                              <td>
+                                <div className="ad-actions">
+                                  {session.status === "pending" && (
+                                    <>
+                                      <button className="ad-btn ad-btn--sm ad-btn--success"
+                                        onClick={() => handleApproveSession(session.id)} disabled={approvalBusy}>
+                                        Genehmigen
+                                      </button>
+                                      <button className="ad-btn ad-btn--sm ad-btn--danger"
+                                        onClick={() => { setRejectingId(session.id); setRejectReason(""); setApprovalError(null); setApprovalSuccess(null); }}
+                                        disabled={approvalBusy}>
+                                        Ablehnen
+                                      </button>
+                                    </>
+                                  )}
+                                  <button className="ad-btn ad-btn--sm ad-btn--ghost"
+                                    onClick={() => startCorrect(session)} disabled={approvalBusy}>
+                                    Korrigieren
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--sm ad-btn--danger"
+                                    onClick={() =>
+                                      handleDeleteSession(session.id, session.employee_name ?? `#${session.employee_id}`)
+                                    }
+                                    disabled={approvalBusy}
+                                  >
+                                    Löschen
+                                  </button>
+                                </div>
+                                {rejectingId === session.id && (
+                                  <form className="ad-inline-form" onSubmit={handleRejectSession}>
+                                    <input className="ad-input" placeholder="Ablehnungsgrund *"
+                                      value={rejectReason}
+                                      onChange={(e) => setRejectReason(e.target.value)}
+                                      required disabled={approvalBusy} />
+                                    <div className="ad-actions">
+                                      <button type="submit" className="ad-btn ad-btn--sm ad-btn--danger"
+                                        disabled={approvalBusy || !rejectReason.trim()}>
+                                        {approvalBusy ? "…" : "Bestätigen"}
+                                      </button>
+                                      <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost"
+                                        onClick={() => { setRejectingId(null); setRejectReason(""); }}>
+                                        Abbrechen
+                                      </button>
+                                    </div>
+                                  </form>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Card>
+              )}
 
               {/* Correction form */}
               {correctingSession && (
@@ -3018,4 +3580,12 @@ function relativeTime(date) {
   if (diff < 3600)  return `vor ${Math.floor(diff / 60)} Min.`;
   if (diff < 86400) return `vor ${Math.floor(diff / 3600)} Std.`;
   return date.toLocaleDateString("de-DE");
+}
+function overdueFor(shiftEnd) {
+  const diffMs = Date.now() - new Date(shiftEnd).getTime();
+  if (diffMs < 0) return "—";
+  const h = Math.floor(diffMs / 3_600_000);
+  const m = Math.floor((diffMs % 3_600_000) / 60_000);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }

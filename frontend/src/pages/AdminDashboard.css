@@ -943,6 +943,8 @@
 .ad-btn--danger:hover:not(:disabled)  { background: #dc2626; transform: translateY(-1px); }
 .ad-btn--success { background: #16a34a; color: #fff; box-shadow: 0 2px 6px rgba(22,163,74,0.25); }
 .ad-btn--success:hover:not(:disabled) { background: #15803d; transform: translateY(-1px); }
+.ad-btn--warning { background: #f59e0b; color: #fff; box-shadow: 0 2px 6px rgba(245,158,11,0.25); }
+.ad-btn--warning:hover:not(:disabled) { background: #d97706; transform: translateY(-1px); }
 .ad-btn--sm { padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 
 .ad-btn--urlaub {
@@ -1894,6 +1896,7 @@
 }
 .ad-checkbox-label input[type="checkbox"] { width: 1rem; height: 1rem; cursor: pointer; accent-color: var(--primary); }
 
+/* legacy alias kept for safety */
 .ad-report-filter {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -2221,4 +2224,383 @@
   .ad-kpi-grid { grid-template-columns: 1fr 1fr; }
   .ad-stat-card__value { font-size: 1.75rem; }
   .ad-stat-card { min-height: auto; padding: 1.125rem; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ATTENDANCE FILTER BAR
+   ══════════════════════════════════════════════════════════════════════ */
+
+.ad-att-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ad-att-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.ad-att-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+
+.ad-att-filters__field--search {
+  flex: 2 1 220px;
+}
+
+.ad-att-filters__field--reset {
+  flex: 0 0 auto;
+}
+
+.ad-att-filters__label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ad-att-filters__input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ad-att-filters__icon {
+  position: absolute;
+  left: 0.65rem;
+  width: 1rem;
+  height: 1rem;
+  color: #94a3b8;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+}
+
+.ad-att-filters__icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.ad-att-filters__input-wrap .ad-input {
+  padding-left: 2.1rem;
+  width: 100%;
+}
+
+.ad-att-filters__input,
+.ad-att-filters__select {
+  width: 100%;
+}
+
+.ad-att-filters__reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  height: 38px;
+  padding: 0 0.9rem;
+}
+
+.ad-att-filters__reset svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.ad-att-filters__count {
+  font-size: 0.82rem;
+  color: #64748b;
+  margin: 0;
+  padding-top: 0.25rem;
+  border-top: 1px solid #f1f5f9;
+}
+
+.ad-att-filters__count strong {
+  color: #1e293b;
+}
+
+.ad-att-filters__date-error {
+  font-size: 0.78rem;
+  color: #dc2626;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.ad-att-filters__date-error::before {
+  content: "⚠";
+  font-size: 0.8rem;
+}
+
+.ad-input--error {
+  border-color: #fca5a5 !important;
+  background: #fff5f5;
+}
+
+/* Responsive */
+@media (max-width: 680px) {
+  .ad-att-filters__row {
+    flex-direction: column;
+  }
+  .ad-att-filters__field {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .ad-att-filters__field--reset {
+    width: 100%;
+  }
+  .ad-att-filters__reset {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* ── Autocomplete Dropdown ─────────────────────────────────────────── */
+
+.ad-att-ac {
+  position: relative;
+}
+
+/* X-Button im Input */
+.ad-att-ac__clear {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.4rem;
+  height: 1.4rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  border-radius: 50%;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ad-att-ac__clear:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.ad-att-ac__clear svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+/* Wenn X-Button sichtbar: Input etwas Abstand rechts geben */
+.ad-att-filters__input-wrap:has(.ad-att-ac__clear) .ad-att-filters__input {
+  padding-right: 2rem;
+}
+
+/* Vorschlagsliste */
+.ad-att-ac__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: #fff;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.ad-att-ac__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-radius: 6px;
+  margin: 0 0.25rem;
+}
+
+.ad-att-ac__item:hover {
+  background: #f0f7ff;
+}
+
+.ad-att-ac__name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+}
+
+.ad-att-ac__email {
+  font-size: 0.775rem;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   REPORT CENTER
+   ══════════════════════════════════════════════════════════════════════ */
+.ad-report-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+.ad-report-quick__btn {
+  padding: 0.375rem 0.875rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.ad-report-quick__btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: #f0f7ff;
+}
+.ad-report-quick__btn--active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff !important;
+}
+.ad-report-quick__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ad-report-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+.ad-report-kpi {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+.ad-report-kpi__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.ad-report-kpi__icon svg { width: 1.25rem; height: 1.25rem; }
+.ad-report-kpi__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+.ad-report-kpi__label {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+.ad-report-kpi--blue   .ad-report-kpi__icon { background: #dbeafe; color: #2563eb; }
+.ad-report-kpi--green  .ad-report-kpi__icon { background: #dcfce7; color: #16a34a; }
+.ad-report-kpi--orange .ad-report-kpi__icon { background: #fef3c7; color: #d97706; }
+.ad-report-kpi--purple .ad-report-kpi__icon { background: #ede9fe; color: #7c3aed; }
+
+.ad-report-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.875rem;
+  align-items: end;
+}
+.ad-report-date-error {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  color: #dc2626;
+  font-weight: 500;
+}
+.ad-report-date-error::before { content: "\26A0\0020"; }
+
+.ad-report-status {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.ad-report-status--pending   { background: #fef9c3; color: #a16207; }
+.ad-report-status--approved  { background: #dcfce7; color: #15803d; }
+.ad-report-status--rejected  { background: #fee2e2; color: #b91c1c; }
+.ad-report-status--corrected { background: #e0f2fe; color: #0369a1; }
+.ad-report-status--open      { background: #fef3c7; color: #d97706; }
+.ad-report-status--closed    { background: #f1f5f9; color: #475569; }
+
+@media (max-width: 680px) {
+  .ad-report-kpi-grid { grid-template-columns: 1fr 1fr; }
+  .ad-report-kpi__value { font-size: 1.2rem; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   OVERDUE CHECKOUTS
+   ══════════════════════════════════════════════════════════════════════ */
+.ad-overdue-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.125rem;
+  margin-bottom: 1.25rem;
+  background: #fffbeb;
+  border: 1.5px solid #fbbf24;
+  border-radius: 10px;
+  color: #92400e;
+}
+.ad-overdue-banner__icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: #d97706;
+}
+.ad-overdue-banner__icon svg { width: 1.25rem; height: 1.25rem; }
+.ad-overdue-banner__text { flex: 1; font-size: 0.9rem; }
+.ad-overdue-banner .ad-btn--warning {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ad-overdue-row {
+  background: #fffbeb;
+}
+.ad-overdue-row:hover {
+  background: #fef3c7 !important;
+}
+
+.ad-overdue-badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 0.76rem;
+  font-weight: 700;
 }

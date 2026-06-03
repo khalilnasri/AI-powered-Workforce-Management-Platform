@@ -12,22 +12,28 @@ POST  /admin/approvals/backfill                   – alte Logs nachträglich al
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.admin_deps import require_admin
 from app.config.database import get_db
 from app.models.attendance import Attendance
 from app.models.employee import Employee
+from app.models.location import WorkplaceLocation
+from app.models.planning import ShiftPlan
 from app.models.work_session import WorkSession
 from app.schemas.approvals import (
+    OverdueCheckoutOut,
     WorkSessionCorrectRequest,
     WorkSessionRejectRequest,
     WorkSessionResponse,
 )
+
+_BERLIN = ZoneInfo("Europe/Berlin")
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +200,166 @@ def delete_work_session(
     db.delete(session)
     db.commit()
     return None
+
+
+@router.get("/overdue-checkouts", response_model=list[OverdueCheckoutOut])
+def list_overdue_checkouts(
+    db:    Session  = Depends(get_db),
+    _:     Employee = Depends(require_admin),
+):
+    """
+    Mitarbeiter, deren letztes Attendance-Ereignis ein Check-in ist
+    und deren geplante Schicht bereits beendet ist.
+    """
+    now_utc    = datetime.now(UTC)
+    now_berlin = datetime.now(_BERLIN)
+    today      = now_berlin.date()
+    yesterday  = today - timedelta(days=1)
+
+    # Letztes Ereignis je Mitarbeiter ermitteln
+    latest_sub = (
+        select(Attendance.employee_id, func.max(Attendance.created_at).label("latest"))
+        .group_by(Attendance.employee_id)
+        .subquery()
+    )
+
+    open_checkins = db.scalars(
+        select(Attendance)
+        .join(
+            latest_sub,
+            (Attendance.employee_id == latest_sub.c.employee_id)
+            & (Attendance.created_at == latest_sub.c.latest),
+        )
+        .where(Attendance.log_type == "checkin")
+    ).all()
+
+    result: list[OverdueCheckoutOut] = []
+    for checkin in open_checkins:
+        emp = db.get(Employee, checkin.employee_id)
+        if emp is None or not emp.is_active:
+            continue
+
+        # Jüngste Schicht der letzten zwei Tage suchen
+        shift = db.scalars(
+            select(ShiftPlan)
+            .where(ShiftPlan.employee_id == checkin.employee_id)
+            .where(ShiftPlan.shift_date >= yesterday)
+            .where(ShiftPlan.shift_date <= today)
+            .order_by(ShiftPlan.shift_date.desc(), ShiftPlan.end_time.desc())
+            .limit(1)
+        ).first()
+
+        if shift is None:
+            continue
+
+        shift_end_local = datetime.combine(shift.shift_date, shift.end_time, tzinfo=_BERLIN)
+        shift_end_utc   = shift_end_local.astimezone(UTC)
+
+        if now_utc <= shift_end_utc:
+            continue  # Schicht läuft noch
+
+        checkin_aware = (
+            checkin.created_at if checkin.created_at.tzinfo
+            else checkin.created_at.replace(tzinfo=UTC)
+        )
+
+        loc = db.get(WorkplaceLocation, shift.location_id) if shift.location_id else None
+
+        result.append(
+            OverdueCheckoutOut(
+                employee_id=emp.id,
+                employee_name=emp.name,
+                checkin_time=checkin_aware,
+                checkin_log_id=checkin.id,
+                shift_date=shift.shift_date,
+                shift_end=shift_end_utc,
+                location_id=shift.location_id,
+                location_name=loc.name if loc else None,
+            )
+        )
+
+    return sorted(result, key=lambda x: x.shift_end)
+
+
+@router.post("/overdue-checkouts/{checkin_log_id}/remind", status_code=200)
+def remind_overdue_employee(
+    checkin_log_id: int,
+    db: Session  = Depends(get_db),
+    _: Employee  = Depends(require_admin),
+):
+    checkin_log = db.get(Attendance, checkin_log_id)
+    if checkin_log is None:
+        raise HTTPException(status_code=404, detail="Eintrag nicht gefunden.")
+    return {"status": "ok", "message": "Erinnerung wurde vermerkt."}
+
+
+@router.post("/overdue-checkouts/{checkin_log_id}/force-checkout", status_code=200)
+def force_checkout_overdue(
+    checkin_log_id: int,
+    db:    Session  = Depends(get_db),
+    admin: Employee = Depends(require_admin),
+):
+    """Erstellt einen manuellen Checkout und legt eine WorkSession (pending) an."""
+    checkin_log = db.get(Attendance, checkin_log_id)
+    if checkin_log is None or checkin_log.log_type != "checkin":
+        raise HTTPException(status_code=404, detail="Check-in nicht gefunden.")
+
+    now_utc    = datetime.now(UTC)
+    now_berlin = datetime.now(_BERLIN)
+    today      = now_berlin.date()
+    yesterday  = today - timedelta(days=1)
+
+    # Schichtende als Checkout-Zeit verwenden (falls in der Vergangenheit)
+    shift = db.scalars(
+        select(ShiftPlan)
+        .where(ShiftPlan.employee_id == checkin_log.employee_id)
+        .where(ShiftPlan.shift_date >= yesterday)
+        .where(ShiftPlan.shift_date <= today)
+        .order_by(ShiftPlan.shift_date.desc(), ShiftPlan.end_time.desc())
+        .limit(1)
+    ).first()
+
+    if shift:
+        shift_end_local = datetime.combine(shift.shift_date, shift.end_time, tzinfo=_BERLIN)
+        shift_end_utc   = shift_end_local.astimezone(UTC)
+        checkout_time   = shift_end_utc if shift_end_utc < now_utc else now_utc
+    else:
+        checkout_time = now_utc
+
+    # Checkout-Attendance-Log anlegen (Koordinaten vom Check-in übernehmen)
+    checkout_log = Attendance(
+        employee_id=checkin_log.employee_id,
+        log_type="checkout",
+        lat=checkin_log.lat,
+        lng=checkin_log.lng,
+        created_at=checkout_time,
+    )
+    db.add(checkout_log)
+    db.flush()
+
+    checkin_time = (
+        checkin_log.created_at if checkin_log.created_at.tzinfo
+        else checkin_log.created_at.replace(tzinfo=UTC)
+    )
+    duration = max(0, int((checkout_time - checkin_time).total_seconds()))
+
+    ws = WorkSession(
+        employee_id=checkin_log.employee_id,
+        checkin_log_id=checkin_log.id,
+        checkout_log_id=checkout_log.id,
+        checkin_time=checkin_time,
+        checkout_time=checkout_time,
+        duration_seconds=duration,
+        status="pending",
+        updated_at=now_utc,
+    )
+    db.add(ws)
+    db.commit()
+    logger.info(
+        "Manueller Checkout: employee_id=%d, checkin_log=%d, checkout=%s",
+        checkin_log.employee_id, checkin_log.id, checkout_time.isoformat(),
+    )
+    return {"status": "ok", "message": "Manueller Checkout durchgefuehrt."}
 
 
 @router.post("/backfill", status_code=200)
