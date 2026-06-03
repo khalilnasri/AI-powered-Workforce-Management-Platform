@@ -68,6 +68,57 @@ def _migrate_db() -> None:
             )
         if "annual_leave_days" not in existing:
             conn.execute(text("ALTER TABLE employees ADD COLUMN annual_leave_days INTEGER"))
+        if "employment_type" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE employees ADD COLUMN employment_type VARCHAR(30) "
+                    "NOT NULL DEFAULT 'full_time'"
+                )
+            )
+        if "target_hours_month" not in existing:
+            conn.execute(text("ALTER TABLE employees ADD COLUMN target_hours_month INTEGER"))
+
+    insp2 = inspect(engine)
+    if (
+        insp2.has_table("employees")
+        and insp2.has_table("locations")
+        and not insp2.has_table("employee_work_locations")
+    ):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE employee_work_locations (
+                        employee_id INTEGER NOT NULL,
+                        location_id INTEGER NOT NULL,
+                        PRIMARY KEY (employee_id, location_id),
+                        FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+                        FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
+            if IS_SQLITE:
+                conn.execute(
+                    text(
+                        """
+                        INSERT OR IGNORE INTO employee_work_locations (employee_id, location_id)
+                        SELECT id, assigned_location_id FROM employees
+                        WHERE assigned_location_id IS NOT NULL
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO employee_work_locations (employee_id, location_id)
+                        SELECT id, assigned_location_id FROM employees
+                        WHERE assigned_location_id IS NOT NULL
+                        ON CONFLICT (employee_id, location_id) DO NOTHING
+                        """
+                    )
+                )
 
 
 app = FastAPI(lifespan=lifespan)

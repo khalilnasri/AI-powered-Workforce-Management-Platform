@@ -6,10 +6,70 @@ Pending/rejected zählen NICHT als offizielle Stunden.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.models.work_session import WorkSession
+
+_BERLIN = ZoneInfo("Europe/Berlin")
+
+
+def current_berlin_month_bounds_utc() -> tuple[datetime, datetime]:
+    """Erster Moment des Monats in Berlin bis erster Moment des Folgemonats — als aware UTC."""
+    from datetime import UTC
+
+    now = datetime.now(_BERLIN)
+    y, m = now.year, now.month
+    start_local = datetime(y, m, 1, 0, 0, 0, tzinfo=_BERLIN)
+    if m == 12:
+        end_local = datetime(y + 1, 1, 1, 0, 0, 0, tzinfo=_BERLIN)
+    else:
+        end_local = datetime(y, m + 1, 1, 0, 0, 0, tzinfo=_BERLIN)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
+def month_hours_summary_by_employee(db: Session) -> dict[int, dict[str, float]]:
+    """
+    Pro Mitarbeiter: genehmigte + korrigierte Stunden im laufenden Berlin-Monat,
+    sowie ausstehende (pending) Stunden im gleichen Fenster.
+    """
+    start_utc, end_utc = current_berlin_month_bounds_utc()
+    stmt = (
+        select(
+            WorkSession.employee_id,
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            WorkSession.status.in_(("approved", "corrected")),
+                            WorkSession.duration_seconds,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("off_sec"),
+            func.coalesce(
+                func.sum(
+                    case((WorkSession.status == "pending", WorkSession.duration_seconds), else_=0),
+                ),
+                0,
+            ).label("pend_sec"),
+        )
+        .where(WorkSession.checkin_time >= start_utc)
+        .where(WorkSession.checkin_time < end_utc)
+        .group_by(WorkSession.employee_id)
+    )
+    out: dict[int, dict[str, float]] = {}
+    for row in db.execute(stmt):
+        out[row.employee_id] = {
+            "official_hours": round(row.off_sec / 3600, 2),
+            "pending_hours": round(row.pend_sec / 3600, 2),
+        }
+    return out
 
 
 def get_employee_session_stats(db: Session, employee_id: int) -> dict:

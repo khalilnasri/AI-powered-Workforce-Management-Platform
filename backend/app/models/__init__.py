@@ -1,5 +1,6 @@
 from app.models.attendance import Attendance
 from app.models.employee import Employee, EmployeeRole
+from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.leave_request import LeaveRequest
 from app.models.location import WorkplaceLocation
 from app.models.planning import ShiftPlan
@@ -9,6 +10,7 @@ __all__ = [
     "Attendance",
     "Employee",
     "EmployeeRole",
+    "EmployeeWorkLocation",
     "LeaveRequest",
     "WorkplaceLocation",
     "ShiftPlan",

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config.company_site import ALLOWED_RADIUS_METERS, COMPANY_LAT, COMPANY_LNG
 from app.models.employee import Employee
+from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.location import WorkplaceLocation
 from app.models.planning import ShiftPlan
 from app.utils.distance import haversine_meters
@@ -94,6 +95,17 @@ def resolve_allowed_workplace_locations(
     active_shift_locs = _active_shift_locations(db, employee.id, now)
     if active_shift_locs:
         return active_shift_locs
+
+    m2m = list(
+        db.scalars(
+            select(WorkplaceLocation)
+            .join(EmployeeWorkLocation, EmployeeWorkLocation.location_id == WorkplaceLocation.id)
+            .where(EmployeeWorkLocation.employee_id == employee.id)
+            .order_by(WorkplaceLocation.id)
+        ).all()
+    )
+    if m2m:
+        return m2m
 
     if employee.assigned_location_id is not None:
         loc = db.get(WorkplaceLocation, employee.assigned_location_id)

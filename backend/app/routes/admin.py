@@ -1,8 +1,10 @@
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.auth.admin_deps import require_admin
@@ -10,9 +12,11 @@ from app.auth.passwords import hash_password
 from app.config.database import get_db
 from app.models.attendance import Attendance
 from app.models.employee import Employee, EmployeeRole
+from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.location import WorkplaceLocation
+from app.services.employment_hours import normalize_employment_type, resolved_month_target_hours
 from app.services.leave_service import aggregate_leave_year_window, resolved_annual_quota
-from app.services.work_session_stats import get_global_session_stats
+from app.services.work_session_stats import get_global_session_stats, month_hours_summary_by_employee
 from app.schemas.admin import (
     AdminAttendanceRow,
     AdminCreateEmployeeRequest,
@@ -43,7 +47,49 @@ def _empty_leave_agg() -> dict[str, int]:
     return {"used_ytd": 0, "pending_ytd": 0, "pending_count": 0}
 
 
-def _employee_to_out(e: Employee, agg_row: dict[str, int] | None = None) -> AdminEmployeeOut:
+def _employee_location_ids_bulk(db: Session, employees: list[Employee]) -> dict[int, list[int]]:
+    if not employees:
+        return {}
+    eids = [e.id for e in employees]
+    rows = db.scalars(
+        select(EmployeeWorkLocation).where(EmployeeWorkLocation.employee_id.in_(eids))
+    ).all()
+    m: dict[int, list[int]] = defaultdict(list)
+    for r in rows:
+        m[r.employee_id].append(r.location_id)
+    for e in employees:
+        if e.id not in m and e.assigned_location_id:
+            m[e.id] = [e.assigned_location_id]
+    return {k: sorted(set(v)) for k, v in m.items()}
+
+
+def _sync_employee_work_locations(db: Session, emp: Employee, location_ids: list[int]) -> None:
+    """Ersetzt M2M-Standorte; validiert IDs. ``assigned_location_id`` = erster Standort (Legacy)."""
+    db.execute(delete(EmployeeWorkLocation).where(EmployeeWorkLocation.employee_id == emp.id))
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for lid in location_ids:
+        if lid in seen:
+            continue
+        loc = db.get(WorkplaceLocation, lid)
+        if loc is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unbekannter Standort (id={lid}).",
+            )
+        seen.add(lid)
+        ordered.append(lid)
+        db.add(EmployeeWorkLocation(employee_id=emp.id, location_id=lid))
+    emp.assigned_location_id = ordered[0] if ordered else None
+
+
+def _employee_to_out(
+    e: Employee,
+    agg_row: dict[str, int] | None = None,
+    *,
+    location_ids: list[int] | None = None,
+    month_hours: dict[str, float] | None = None,
+) -> AdminEmployeeOut:
     row = agg_row or _empty_leave_agg()
     annual = resolved_annual_quota(e)
     used = row["used_ytd"]
@@ -51,6 +97,15 @@ def _employee_to_out(e: Employee, agg_row: dict[str, int] | None = None) -> Admi
     pend_cnt = row["pending_count"]
     remaining = max(0, annual - used)
     available = max(0, annual - used - pend_days)
+    mh = month_hours or {"official_hours": 0.0, "pending_hours": 0.0}
+    official = float(mh.get("official_hours", 0.0))
+    pending_h = float(mh.get("pending_hours", 0.0))
+    target = resolved_month_target_hours(e)
+    diff = round(official - target, 2)
+    loc_ids = sorted(set(location_ids or []))
+    if not loc_ids and e.assigned_location_id:
+        loc_ids = [e.assigned_location_id]
+    et = normalize_employment_type(getattr(e, "employment_type", None))
     return AdminEmployeeOut(
         id=e.id,
         name=e.name,
@@ -59,6 +114,13 @@ def _employee_to_out(e: Employee, agg_row: dict[str, int] | None = None) -> Admi
         is_active=e.is_active,
         phone=e.phone,
         assigned_location_id=e.assigned_location_id,
+        assigned_location_ids=loc_ids,
+        employment_type=et,
+        target_hours_month=e.target_hours_month,
+        hours_target_month=target,
+        hours_official_month=official,
+        hours_pending_month=pending_h,
+        hours_diff_month=diff,
         annual_leave_days=e.annual_leave_days,
         leave_annual_resolved=annual,
         leave_used_this_year=used,
@@ -76,7 +138,17 @@ def list_employees(
 ):
     rows = db.scalars(select(Employee).order_by(Employee.id)).all()
     agg = aggregate_leave_year_window(db)
-    return [_employee_to_out(e, agg.get(e.id)) for e in rows]
+    mh_all = month_hours_summary_by_employee(db)
+    loc_map = _employee_location_ids_bulk(db, rows)
+    return [
+        _employee_to_out(
+            e,
+            agg.get(e.id),
+            location_ids=loc_map.get(e.id, []),
+            month_hours=mh_all.get(e.id),
+        )
+        for e in rows
+    ]
 
 
 @router.post("/employees", response_model=AdminEmployeeOut, status_code=status.HTTP_201_CREATED)
@@ -109,7 +181,9 @@ def create_employee(
     db.commit()
     db.refresh(employee)
     agg = aggregate_leave_year_window(db)
-    return _employee_to_out(employee, agg.get(employee.id))
+    mh_all = month_hours_summary_by_employee(db)
+    loc_ids = _employee_location_ids_bulk(db, [employee]).get(employee.id, [])
+    return _employee_to_out(employee, agg.get(employee.id), location_ids=loc_ids, month_hours=mh_all.get(employee.id))
 
 
 @router.put("/employees/{employee_id}", response_model=AdminEmployeeOut)
@@ -136,17 +210,36 @@ def update_employee(
     if emp.id == current_admin.id and not body.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Du kannst dich nicht selbst deaktivieren.")
 
+    et = normalize_employment_type(body.employment_type)
+    if body.target_hours_month is not None and (
+        body.target_hours_month < 1 or body.target_hours_month > 200
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Soll-Stunden / Monat optional: Wert muss zwischen 1 und 200 liegen.",
+        )
+
+    loc_ids_body = list(body.assigned_location_ids or [])
+    if not loc_ids_body and body.assigned_location_id is not None:
+        loc_ids_body = [body.assigned_location_id]
+
     emp.name = body.name.strip()
     emp.email = email_norm
     emp.role = EmployeeRole(body.role)
     emp.phone = body.phone.strip() if body.phone else None
-    emp.assigned_location_id = body.assigned_location_id
     emp.is_active = body.is_active
     emp.annual_leave_days = body.annual_leave_days
+    emp.employment_type = et
+    emp.target_hours_month = body.target_hours_month
+
+    _sync_employee_work_locations(db, emp, loc_ids_body)
+
     db.commit()
     db.refresh(emp)
     agg = aggregate_leave_year_window(db)
-    return _employee_to_out(emp, agg.get(emp.id))
+    mh_all = month_hours_summary_by_employee(db)
+    loc_ids = _employee_location_ids_bulk(db, [emp]).get(emp.id, [])
+    return _employee_to_out(emp, agg.get(emp.id), location_ids=loc_ids, month_hours=mh_all.get(emp.id))
 
 
 @router.patch("/employees/{employee_id}/activate", response_model=AdminEmployeeOut)
@@ -162,7 +255,9 @@ def activate_employee(
     db.commit()
     db.refresh(emp)
     agg = aggregate_leave_year_window(db)
-    return _employee_to_out(emp, agg.get(emp.id))
+    mh_all = month_hours_summary_by_employee(db)
+    loc_ids = _employee_location_ids_bulk(db, [emp]).get(emp.id, [])
+    return _employee_to_out(emp, agg.get(emp.id), location_ids=loc_ids, month_hours=mh_all.get(emp.id))
 
 
 @router.patch("/employees/{employee_id}/deactivate", response_model=AdminEmployeeOut)
@@ -180,7 +275,9 @@ def deactivate_employee(
     db.commit()
     db.refresh(emp)
     agg = aggregate_leave_year_window(db)
-    return _employee_to_out(emp, agg.get(emp.id))
+    mh_all = month_hours_summary_by_employee(db)
+    loc_ids = _employee_location_ids_bulk(db, [emp]).get(emp.id, [])
+    return _employee_to_out(emp, agg.get(emp.id), location_ids=loc_ids, month_hours=mh_all.get(emp.id))
 
 
 @router.get("/locations", response_model=list[AdminLocationOut])
