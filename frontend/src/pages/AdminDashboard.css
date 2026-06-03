@@ -1438,6 +1438,7 @@
   box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
 }
 
+.ad-hours-kpi-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.65rem;
