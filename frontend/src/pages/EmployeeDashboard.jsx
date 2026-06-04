@@ -1,5 +1,5 @@
 import axios from "axios";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiClient, clearToken } from "../apiClient";
 import "./EmployeeDashboard.css";
@@ -108,24 +108,218 @@ const IcoVacation = () => (
     <path d="M2 10h20" />
   </svg>
 );
+const IcoHome = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+    strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="7" height="9" rx="1" />
+    <rect x="14" y="3" width="7" height="5" rx="1" />
+    <rect x="14" y="12" width="7" height="9" rx="1" />
+    <rect x="3" y="16" width="7" height="5" rx="1" />
+  </svg>
+);
+
+/** Mo–So Raster für einen Monat (monthIndex 0–11) */
+function buildMonthCells(year, monthIndex) {
+  const first = new Date(year, monthIndex, 1);
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  const mon0 = (d) => (d + 6) % 7; // Montag = 0
+  const pad = mon0(first.getDay());
+  const cells = [];
+  for (let i = 0; i < pad; i++) cells.push({ kind: "pad", key: `p-${i}` });
+  for (let d = 1; d <= lastDay; d++) {
+    const iso = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    cells.push({ kind: "day", day: d, iso, key: iso });
+  }
+  while (cells.length % 7 !== 0) cells.push({ kind: "pad", key: `t-${cells.length}` });
+  return cells;
+}
+
+function enumerateRequestDates(isoStart, isoEnd) {
+  if (!isoStart || !isoEnd) return [];
+  const start = new Date(`${isoStart}T12:00:00`);
+  const end = new Date(`${isoEnd}T12:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+  const out = [];
+  for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/** Kalendertag YYYY-MM-DD in lokaler Zeitzone (für Stempel-Sessions). */
+function localIsoDateFromInstant(isoString) {
+  if (!isoString) return null;
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function localIsoToday() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Zeitpunkt des Einstempelns der offenen Besuchssession (für Live-Zähler). */
+function getOpenSessionCheckinIso(workedTime) {
+  if (!workedTime?.active || !Array.isArray(workedTime.sessions)) return null;
+  const open = [...workedTime.sessions].reverse().find((s) => !s.checkout);
+  return open?.checkin ?? null;
+}
+
+function resolveActiveCheckinIso(workedTime, logs, checkedIn) {
+  const fromWorked = getOpenSessionCheckinIso(workedTime);
+  if (fromWorked) return fromWorked;
+  if (checkedIn && logs?.[0] && String(logs[0].type ?? "").toLowerCase() === "checkin") {
+    return logs[0].created_at;
+  }
+  return null;
+}
+
+/** { h, m, s } seit checkinIso (lokale Uhr). */
+function formatElapsedHmsParts(checkinIso) {
+  if (!checkinIso) return null;
+  const t0 = new Date(checkinIso).getTime();
+  if (Number.isNaN(t0)) return null;
+  const secs = Math.max(0, Math.floor((Date.now() - t0) / 1000));
+  return {
+    h: Math.floor(secs / 3600),
+    m: Math.floor((secs % 3600) / 60),
+    s: secs % 60,
+  };
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+/** Re-Rendern jede Sekunde solange eine laufende Schicht angezeigt wird. */
+function useTickingNow(enabled) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const id = window.setInterval(() => setTick((x) => x + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [enabled]);
+}
+
+/** Kalender + Legende (geplant / gestempelt / Urlaub) */
+function EmployeeMonthCalendar({
+  year,
+  monthIndex,
+  onPrev,
+  onNext,
+  plannedShiftDates,
+  workedShiftDates,
+  leaveDayMap,
+  todayIso,
+  size = "default",
+}) {
+  const cells = buildMonthCells(year, monthIndex);
+  const title = new Date(year, monthIndex, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  const dow = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const calClass = size === "large" ? "ed-cal ed-cal--large" : "ed-cal";
+
+  return (
+    <div className={calClass}>
+      <div className="ed-cal__head">
+        <button type="button" className="ed-cal__nav" onClick={onPrev} aria-label="Vorheriger Monat">‹</button>
+        <h3 className="ed-cal__title">{title}</h3>
+        <button type="button" className="ed-cal__nav" onClick={onNext} aria-label="Nächster Monat">›</button>
+      </div>
+      <div className="ed-cal__dow" role="row">
+        {dow.map((d) => (
+          <span key={d} className="ed-cal__dow-cell">{d}</span>
+        ))}
+      </div>
+      <div className="ed-cal__grid" role="grid">
+        {cells.map((c) => {
+          if (c.kind === "pad") return <div key={c.key} className="ed-cal__cell ed-cal__cell--pad" aria-hidden />;
+          const isToday = c.iso === todayIso;
+          const hasPlanned = plannedShiftDates?.has?.(c.iso);
+          const hasWorked = workedShiftDates?.has?.(c.iso);
+          const leave = leaveDayMap?.get?.(c.iso);
+          return (
+            <div
+              key={c.key}
+              className={`ed-cal__cell${isToday ? " ed-cal__cell--today" : ""}`}
+              role="gridcell"
+            >
+              <span className="ed-cal__num">{c.day}</span>
+              {(hasPlanned || hasWorked || leave) && (
+                <span className="ed-cal__dots" aria-hidden>
+                  {hasPlanned && <span className="ed-cal__dot ed-cal__dot--planned" title="Geplante Schicht" />}
+                  {hasWorked && <span className="ed-cal__dot ed-cal__dot--worked" title="Gearbeitet (Einstempelung)" />}
+                  {leave === "approved" && <span className="ed-cal__dot ed-cal__dot--leave-ok" />}
+                  {leave === "pending" && <span className="ed-cal__dot ed-cal__dot--leave-pend" />}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <ul className="ed-cal__legend">
+        <li><span className="ed-cal__dot ed-cal__dot--planned" /> Geplante Schicht</li>
+        <li><span className="ed-cal__dot ed-cal__dot--worked" /> Gearbeitet (Stempel)</li>
+        <li><span className="ed-cal__dot ed-cal__dot--leave-ok" /> Urlaub genehmigt</li>
+        <li><span className="ed-cal__dot ed-cal__dot--leave-pend" /> Urlaub offen</li>
+      </ul>
+    </div>
+  );
+}
+
+/** Rollenbezeichnung für die Anzeige (Topbar). */
+function formatRoleDe(role) {
+  const r = String(role || "").toLowerCase();
+  if (r === "employee") return "Mitarbeiter";
+  if (r === "admin") return "Administration";
+  return role || "—";
+}
+
+/** Server liefert englische Status-Texte — für einheitliches Deutsch mappen. */
+const ATTENDANCE_MSG_DE = {
+  "Checked out — no punches recorded yet. Start with Check In.":
+    "Ausgestempelt — noch keine Stempel. Zum Start: Einstempeln.",
+  "Checked in — Check Out ends this visit. Both actions can repeat in the same day.":
+    "Eingestempelt — mit Ausstempeln beendest du diesen Besuch. Mehrere Ein- und Ausstempelungen pro Tag sind möglich.",
+  "Checked out — you can Check In again for another visit whenever you arrive.":
+    "Ausgestempelt — du kannst bei Ankunft wieder einstempeln.",
+};
+
+function localizeAttendanceMessage(msg) {
+  if (msg == null || typeof msg !== "string") return msg;
+  const t = msg.trim();
+  return ATTENDANCE_MSG_DE[t] ?? msg;
+}
 
 // ── Nav config ────────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
-  { id: "checkin",  label: "Check-in / Out",  Icon: IcoCheckin  },
-  { id: "worked",   label: "Worked Time",     Icon: IcoWorked   },
+  { id: "overview", label: "Dashboard",       Icon: IcoHome     },
+  { id: "checkin",  label: "Stempeln & GPS",  Icon: IcoCheckin  },
+  { id: "worked",   label: "Arbeitszeit",     Icon: IcoWorked   },
   { id: "shifts",   label: "Meine Schichten", Icon: IcoShifts   },
   { id: "leave",    label: "Urlaub",          Icon: IcoVacation },
   { id: "sessions", label: "Meine Sessions",  Icon: IcoSessions },
-  { id: "logs",     label: "Attendance Log",  Icon: IcoLogs     },
-  { id: "ai",       label: "AI Assistant",    Icon: IcoAI       },
+  { id: "logs",     label: "Stempelprotokoll", Icon: IcoLogs     },
+  { id: "ai",       label: "KI-Assistent",    Icon: IcoAI       },
 ];
 
 // ── Main Component ────────────────────────────────────────────────────────────
 export function EmployeeDashboard() {
   const navigate = useNavigate();
 
-  // ── Tab state (default: Check-in / Out) ───────────────────────────────────
-  const [activeTab, setActiveTab] = useState("checkin");
+  // ── Tab state (Standard: Dashboard mit Kalender & Schnellaktionen) ───────
+  const [activeTab, setActiveTab] = useState("overview");
+  /** Monat für Kalender (1. des Monats) */
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), 1);
+  });
 
   // ── Profile ───────────────────────────────────────────────────────────────
   const [data,    setData]    = useState(null);
@@ -194,7 +388,7 @@ export function EmployeeDashboard() {
     return apiClient
       .get(STATUS_URL)
       .then((res) => { setAttendanceStatus(res.data); })
-      .catch(() => { setAttendanceStatus(null); setStatusError("Attendance-Status konnte nicht geladen werden."); })
+      .catch(() => { setAttendanceStatus(null); setStatusError("Stempelstatus konnte nicht geladen werden."); })
       .finally(() => { setStatusLoading(false); });
   }, []);
 
@@ -204,7 +398,7 @@ export function EmployeeDashboard() {
     return apiClient
       .get(LOGS_URL)
       .then((res) => { setLogs(res.data); })
-      .catch(() => { setLogsError("Attendance-Logs konnten nicht geladen werden."); })
+      .catch(() => { setLogsError("Stempelprotokoll konnte nicht geladen werden."); })
       .finally(() => { setLogsLoading(false); });
   }, []);
 
@@ -273,7 +467,7 @@ export function EmployeeDashboard() {
   }, [activeTab, fetchMySessions]);
 
   useEffect(() => {
-    if (activeTab === "leave") fetchMyLeaveRequests();
+    if (activeTab === "leave" || activeTab === "overview") fetchMyLeaveRequests();
   }, [activeTab, fetchMyLeaveRequests]);
 
   // Automatisch zum Ende des Chats scrollen wenn neue Nachricht kommt
@@ -378,7 +572,7 @@ export function EmployeeDashboard() {
               setAreaStatus(msg === GEOFENCE_MESSAGE ? "outside" : null);
               return;
             }
-            setAttendanceError("Attendance konnte nicht an den Server gesendet werden.");
+            setAttendanceError("Stempelung konnte nicht an den Server gesendet werden.");
             setAreaStatus(null);
           })
           .finally(() => { setGpsBusy(false); });
@@ -418,6 +612,65 @@ export function EmployeeDashboard() {
     }
   }
 
+  const shiftDateSet = useMemo(() => {
+    const s = new Set();
+    for (const sh of myShifts) {
+      if (sh.shift_date) s.add(sh.shift_date);
+    }
+    return s;
+  }, [myShifts]);
+
+  /** Tage mit mindestens einer Einstempelung (lokales Datum), aus Paar-Sessions. */
+  const workedShiftDateSet = useMemo(() => {
+    const s = new Set();
+    if (!workedTime?.sessions?.length) return s;
+    for (const sess of workedTime.sessions) {
+      const iso = localIsoDateFromInstant(sess.checkin);
+      if (iso) s.add(iso);
+    }
+    return s;
+  }, [workedTime]);
+
+  const leaveDayMap = useMemo(() => {
+    const m = new Map();
+    for (const r of myLeaveRequests) {
+      const st = (r.status || "").toLowerCase();
+      if (st === "rejected") continue;
+      const kind = st === "approved" ? "approved" : "pending";
+      for (const iso of enumerateRequestDates(r.start_date, r.end_date)) {
+        const prev = m.get(iso);
+        if (kind === "approved" || prev === "approved") m.set(iso, "approved");
+        else m.set(iso, "pending");
+      }
+    }
+    return m;
+  }, [myLeaveRequests]);
+
+  /** Nächste Schichten (ab heute) für Dashboard-Karte */
+  const upcomingShiftsPreview = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return [...myShifts]
+      .filter((sh) => sh.shift_date >= today)
+      .sort((a, b) => (a.shift_date + a.start_time).localeCompare(b.shift_date + b.start_time))
+      .slice(0, 4);
+  }, [myShifts]);
+
+  const calYear = calendarMonth.getFullYear();
+  const calMonthIndex = calendarMonth.getMonth();
+  const calPrev = () => {
+    setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+  const calNext = () => {
+    setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
+
+  const isCheckedIn = attendanceStatus?.status === "checked_in";
+  const activeCheckinIso = useMemo(
+    () => resolveActiveCheckinIso(workedTime, logs, isCheckedIn),
+    [workedTime, logs, isCheckedIn],
+  );
+  useTickingNow(Boolean(isCheckedIn && activeCheckinIso));
+
   // ── Guards ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -438,8 +691,21 @@ export function EmployeeDashboard() {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 
-  const isCheckedIn   = attendanceStatus?.status === "checked_in";
   const activeLabel   = NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? "Dashboard";
+  const liveShiftParts = formatElapsedHmsParts(activeCheckinIso);
+
+  const monthHoursRemain =
+    workedTime != null
+      ? {
+          target: workedTime.month_target_hours ?? 160,
+          done: workedTime.official_hours_month ?? 0,
+          pend: workedTime.pending_hours_month ?? 0,
+          remain:
+            Math.round(
+              ((workedTime.month_target_hours ?? 160) - (workedTime.official_hours_month ?? 0)) * 100,
+            ) / 100,
+        }
+      : null;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -497,20 +763,20 @@ export function EmployeeDashboard() {
             <div className="ed-topbar__avatar">{data.name?.[0]?.toUpperCase() ?? "?"}</div>
             <div className="ed-topbar__user-info">
               <span className="ed-topbar__user-name">{data.name}</span>
-              <span className="ed-topbar__user-role">{data.role}</span>
+              <span className="ed-topbar__user-role">{formatRoleDe(data.role)}</span>
             </div>
           </div>
         </div>
 
         {/* ── Content ── */}
-        <div className="ed-content">
+        <div className={`ed-content${activeTab === "overview" ? " ed-content--overview-dense" : ""}`}>
 
           {/* Stats cards — immer sichtbar */}
-          <div className="ed-stats-grid">
+          <div className={`ed-stats-grid${activeTab === "overview" ? " ed-stats-grid--overview-4" : ""}`}>
             <div className={`ed-stat-card ed-stat-card--${isCheckedIn ? "green" : "blue"}`}>
               <div className="ed-stat-card__icon">{isCheckedIn ? "🟢" : "⏸"}</div>
               <div className="ed-stat-card__body">
-                <div className="ed-stat-card__value">{isCheckedIn ? "Checked In" : "Checked Out"}</div>
+                <div className="ed-stat-card__value">{isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}</div>
                 <div className="ed-stat-card__label">Status</div>
               </div>
             </div>
@@ -518,9 +784,15 @@ export function EmployeeDashboard() {
               <div className="ed-stat-card__icon">✅</div>
               <div className="ed-stat-card__body">
                 <div className="ed-stat-card__value">
-                  {workedLoading ? "…" : workedTime ? `${workedTime.official_hours?.toFixed(1) ?? "0.0"} h` : "—"}
+                  {workedLoading
+                    ? "…"
+                    : workedTime
+                      ? `${(workedTime.official_hours_month ?? workedTime.official_hours ?? 0)
+                          .toFixed(1)
+                          .replace(/\.0$/, "")} h`
+                      : "—"}
                 </div>
-                <div className="ed-stat-card__label">Offizielle Stunden</div>
+                <div className="ed-stat-card__label">Offiziell (Monat)</div>
               </div>
             </div>
             <div className="ed-stat-card ed-stat-card--orange">
@@ -556,16 +828,310 @@ export function EmployeeDashboard() {
             </div>
           </div>
 
+          {/* ═══ DASHBOARD (Übersicht + Kalender + Stempeln) ═══════════════════ */}
+          {activeTab === "overview" && (
+            <div className="ed-section">
+              <div className="ed-section-title ed-section-title--overview">
+                <div className="ed-section-title__text">
+                  <h2>Übersicht</h2>
+                  <p className="ed-section-title__sub">Stempeln, Monatsstunden, Kalender und nächste Termine</p>
+                </div>
+              </div>
+              <div className="ed-overview ed-overview--dashboard">
+                <div className="ed-overview__pre">
+                  <div className="ed-overview__primary">
+                    <div className="ed-card ed-overview__hero">
+                      <p className="ed-hint ed-overview__lede">
+                        Stempeln mit Browser-Standort. Details unter{" "}
+                        <button type="button" className="ed-inline-link" onClick={() => setActiveTab("checkin")}>
+                          Stempeln &amp; GPS
+                        </button>
+                        .
+                      </p>
+
+                      {statusLoading ? (
+                        <p className="ed-hint">Status wird geladen…</p>
+                      ) : statusError ? (
+                        <p className="ed-alert" role="alert">{statusError}</p>
+                      ) : attendanceStatus ? (
+                        <div className="ed-status-row ed-status-row--hero">
+                          <span className={`ed-badge ed-badge--${isCheckedIn ? "green" : "gray"}`}>
+                            {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
+                          </span>
+                          <p className="ed-status-message">{localizeAttendanceMessage(attendanceStatus.message)}</p>
+                        </div>
+                      ) : null}
+
+                      <div className="ed-hero-actions">
+                        <button
+                          type="button"
+                          className="ed-btn ed-btn--checkin ed-btn--hero"
+                          onClick={() => runGpsThenPost(CHECKIN_URL)}
+                          disabled={
+                            gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkin
+                          }
+                        >
+                          {gpsBusy && attendanceStatus?.can_checkin ? "Standort wird ermittelt…" : "✔ Einstempeln"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ed-btn ed-btn--checkout ed-btn--hero"
+                          onClick={() => runGpsThenPost(CHECKOUT_URL)}
+                          disabled={
+                            gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkout
+                          }
+                        >
+                          {gpsBusy && attendanceStatus?.can_checkout ? "Standort wird ermittelt…" : "✖ Ausstempeln"}
+                        </button>
+                      </div>
+                      <p className="ed-hint ed-hero-actions__hint">
+                        Ausgegraute Taste: Aktion gerade nicht möglich (siehe Status oben).
+                      </p>
+
+                      {attendanceError && (
+                        <p className="ed-alert" role="alert">{attendanceError}</p>
+                      )}
+                      {gpsError && (
+                        <p className="ed-alert" role="alert">{gpsError}</p>
+                      )}
+                    </div>
+
+                    <div className="ed-overview__stack">
+                      <div className="ed-card ed-overview__live-shift">
+                        <h3 className="ed-overview__quick-title">Laufende Schicht</h3>
+                        {isCheckedIn && !activeCheckinIso && (
+                          <p className="ed-hint">Zeit wird geladen…</p>
+                        )}
+                        {isCheckedIn && activeCheckinIso && liveShiftParts && (
+                          <>
+                            <p className="ed-live-shift__since">
+                              Gestartet: <time dateTime={activeCheckinIso}>{formatLogTime(activeCheckinIso)}</time>
+                            </p>
+                            <div className="ed-live-shift__clock" aria-live="polite" aria-atomic="true">
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.h)}</span>
+                                <span className="ed-live-shift__cap">Std.</span>
+                              </span>
+                              <span className="ed-live-shift__colon" aria-hidden>:</span>
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.m)}</span>
+                                <span className="ed-live-shift__cap">Min.</span>
+                              </span>
+                              <span className="ed-live-shift__colon" aria-hidden>:</span>
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.s)}</span>
+                                <span className="ed-live-shift__cap">Sek.</span>
+                              </span>
+                            </div>
+                            <p className="ed-live-shift__hint">
+                              Zum Beenden: <strong>Ausstempeln</strong> (Button oben).
+                            </p>
+                          </>
+                        )}
+                        {!isCheckedIn && (
+                          <p className="ed-hint ed-live-shift__idle">
+                            Keine laufende Schicht. Nach <strong>Einstempeln</strong> erscheint hier die Live-Zeit
+                            (Std. · Min. · Sek.).
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="ed-card ed-overview__month-budget ed-overview__month-budget--in-primary">
+                        <p className="ed-card-title ed-overview__cal-heading">Stunden im Monat</p>
+                        <p className="ed-overview__month-budget-sub">
+                          {new Date().toLocaleString("de-DE", { month: "long", year: "numeric" })} · Monatssoll minus
+                          genehmigte/korrigierte Sessions
+                        </p>
+                        {workedLoading ? (
+                          <p className="ed-hint">Wird geladen…</p>
+                        ) : workedError ? (
+                          <p className="ed-alert" role="alert">{workedError}</p>
+                        ) : !workedTime ? (
+                          <p className="ed-hint">Keine Daten.</p>
+                        ) : monthHoursRemain ? (
+                          <>
+                            <div className="ed-overview__month-budget-rows">
+                              <div className="ed-overview__month-budget-row">
+                                <span>Monatssoll</span>
+                                <strong>{monthHoursRemain.target} h</strong>
+                              </div>
+                              <div className="ed-overview__month-budget-row">
+                                <span>Offiziell (Monat)</span>
+                                <strong className="ed-overview__month-budget-done">
+                                  {monthHoursRemain.done.toFixed(1).replace(/\.0$/, "")} h
+                                </strong>
+                              </div>
+                              {monthHoursRemain.pend > 0 && (
+                                <div className="ed-overview__month-budget-row ed-overview__month-budget-row--muted">
+                                  <span>Davon ausstehend</span>
+                                  <strong>{monthHoursRemain.pend.toFixed(1).replace(/\.0$/, "")} h</strong>
+                                </div>
+                              )}
+                            </div>
+                            <div
+                              className={`ed-overview__month-budget-remain${
+                                monthHoursRemain.remain > 0 ? "" : " ed-overview__month-budget-remain--done"
+                              }`}
+                              role="status"
+                            >
+                              {monthHoursRemain.remain > 0 ? (
+                                <>
+                                  <span className="ed-overview__month-budget-remain-label">Noch zu leisten</span>
+                                  <span className="ed-overview__month-budget-remain-val">
+                                    ca. {monthHoursRemain.remain.toFixed(1).replace(/\.0$/, "")} h
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="ed-overview__month-budget-remain-label">Monatssoll</span>
+                                  <span className="ed-overview__month-budget-remain-val">
+                                    erreicht
+                                    {monthHoursRemain.remain < 0
+                                      ? ` · +${Math.abs(monthHoursRemain.remain).toFixed(1).replace(/\.0$/, "")} h über Soll`
+                                      : ""}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  className="ed-overview__tri-grid"
+                  role="group"
+                  aria-label="Schichten, Kalender und Arbeitszeit"
+                >
+                  <div className="ed-overview__tri-col ed-overview__tri-col--shifts">
+                    <div className="ed-card ed-overview__extra">
+                      <h3 className="ed-overview__quick-title">Meine Schichten</h3>
+                      <p className="ed-hint ed-overview__extra-hint">Nächste Termine (ab heute).</p>
+                      {shiftsLoading ? (
+                        <p className="ed-hint">Schichten werden geladen…</p>
+                      ) : shiftsError ? (
+                        <p className="ed-alert" role="alert">{shiftsError}</p>
+                      ) : upcomingShiftsPreview.length === 0 ? (
+                        <p className="ed-hint">Keine anstehenden Schichten.</p>
+                      ) : (
+                        <ul className="ed-overview__shift-list">
+                          {upcomingShiftsPreview.map((shift) => {
+                            const todayIso = new Date().toISOString().slice(0, 10);
+                            const isToday = shift.shift_date === todayIso;
+                            const dateLabel = new Date(`${shift.shift_date}T00:00:00`).toLocaleDateString("de-DE", {
+                              weekday: "short",
+                              day: "2-digit",
+                              month: "short",
+                            });
+                            return (
+                              <li key={shift.id} className="ed-overview__shift-row">
+                                <span className="ed-overview__shift-date">
+                                  {isToday && <span className="ed-overview__shift-today">Heute</span>}
+                                  {dateLabel}
+                                </span>
+                                <span className="ed-overview__shift-time">
+                                  {shift.start_time.slice(0, 5)}–{shift.end_time.slice(0, 5)}
+                                </span>
+                                {shift.location_name && (
+                                  <span className="ed-overview__shift-loc">{shift.location_name}</span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      <button type="button" className="ed-btn ed-btn--ghost ed-btn--sm" onClick={() => setActiveTab("shifts")}>
+                        Alle Schichten →
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="ed-overview__tri-col ed-overview__tri-col--calendar">
+                    <div className="ed-card ed-overview__cal-card ed-overview__cal-card--feature">
+                      <div className="ed-overview__cal-head">
+                        <p className="ed-card-title ed-overview__cal-heading">Kalender</p>
+                      </div>
+                      {leaveListLoading && myLeaveRequests.length === 0 ? (
+                        <p className="ed-hint">Kalenderdaten werden geladen…</p>
+                      ) : (
+                        <EmployeeMonthCalendar
+                          year={calYear}
+                          monthIndex={calMonthIndex}
+                          onPrev={calPrev}
+                          onNext={calNext}
+                          plannedShiftDates={shiftDateSet}
+                          workedShiftDates={workedShiftDateSet}
+                          leaveDayMap={leaveDayMap}
+                          todayIso={localIsoToday()}
+                          size="large"
+                        />
+                      )}
+                      {shiftsError && (
+                        <p className="ed-hint" role="note">Schichten: {shiftsError}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="ed-overview__tri-col ed-overview__tri-col--worked">
+                    <div className="ed-card ed-overview__extra">
+                      <h3 className="ed-overview__quick-title">Arbeitszeit</h3>
+                      <p className="ed-hint ed-overview__extra-hint">Offizielle und ausstehende Zeiten.</p>
+                      {workedLoading ? (
+                        <p className="ed-hint">Arbeitszeit wird geladen…</p>
+                      ) : workedError ? (
+                        <p className="ed-alert" role="alert">{workedError}</p>
+                      ) : !workedTime ? (
+                        <p className="ed-hint">Keine Daten.</p>
+                      ) : (
+                        <div className="ed-overview__worked">
+                          <div className="ed-overview__worked-row">
+                            <span className="ed-overview__worked-label">Offiziell</span>
+                            <strong className="ed-overview__worked-val ed-overview__worked-val--ok">
+                              {formatDurationSeconds(workedTime.official_seconds ?? 0)}
+                            </strong>
+                          </div>
+                          <div className="ed-overview__worked-row">
+                            <span className="ed-overview__worked-label">Ausstehend</span>
+                            <strong className="ed-overview__worked-val ed-overview__worked-val--pend">
+                              {formatDurationSeconds(workedTime.pending_seconds ?? 0)}
+                              <span className="ed-overview__worked-meta"> ({workedTime.pending_count ?? 0})</span>
+                            </strong>
+                          </div>
+                          <div className="ed-overview__worked-row ed-overview__worked-row--last">
+                            <span className="ed-overview__worked-label">Stempelung</span>
+                            <span>
+                              <span className={`ed-badge ed-badge--${workedTime.active ? "green" : "gray"}`}>
+                                {workedTime.active ? "Aktiv" : "Inaktiv"}
+                              </span>
+                              {isCheckedIn && (
+                                <span className="ed-sr-only"> Live-Stoppuhr in der Karte „Laufende Schicht“.</span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      <button type="button" className="ed-btn ed-btn--ghost ed-btn--sm" onClick={() => setActiveTab("worked")}>
+                        Details &amp; Sessions →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ═══ CHECK-IN / OUT ══════════════════════════════════════════ */}
           {activeTab === "checkin" && (
             <div className="ed-section">
-              <div className="ed-section-title"><h2>Attendance mit GPS</h2></div>
+              <div className="ed-section-title"><h2>Stempeln mit GPS</h2></div>
               <div className="ed-dashboard-grid">
 
                 {/* Aktionen */}
                 <div className="ed-card ed-card--grow">
                   <p className="ed-hint">
-                    Nutzt deinen Browser-Standort. Check-in und Check-out wechseln sich ab.
+                    Nutzt deinen Browser-Standort. Einstempeln und Ausstempeln wechseln sich ab.
                     Der Server erzwingt diese Reihenfolge.
                   </p>
 
@@ -578,7 +1144,7 @@ export function EmployeeDashboard() {
                       <span className={`ed-badge ed-badge--${isCheckedIn ? "green" : "gray"}`}>
                         {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
                       </span>
-                      <p className="ed-status-message">{attendanceStatus.message}</p>
+                      <p className="ed-status-message">{localizeAttendanceMessage(attendanceStatus.message)}</p>
                     </div>
                   ) : null}
 
@@ -590,7 +1156,7 @@ export function EmployeeDashboard() {
                         onClick={() => runGpsThenPost(CHECKIN_URL)}
                         disabled={gpsBusy || statusLoading || Boolean(statusError)}
                       >
-                        {gpsBusy ? "Standort wird ermittelt…" : "✔ Check In"}
+                        {gpsBusy ? "Standort wird ermittelt…" : "✔ Einstempeln"}
                       </button>
                     )}
                     {attendanceStatus?.can_checkout && (
@@ -600,7 +1166,7 @@ export function EmployeeDashboard() {
                         onClick={() => runGpsThenPost(CHECKOUT_URL)}
                         disabled={gpsBusy || statusLoading || Boolean(statusError)}
                       >
-                        {gpsBusy ? "Standort wird ermittelt…" : "✖ Check Out"}
+                        {gpsBusy ? "Standort wird ermittelt…" : "✖ Ausstempeln"}
                       </button>
                     )}
                   </div>
@@ -612,7 +1178,7 @@ export function EmployeeDashboard() {
 
                 {/* GPS Info */}
                 <div className="ed-card ed-card--sidebar">
-                  <p className="ed-card-title">GPS Info</p>
+                  <p className="ed-card-title">GPS-Information</p>
                   {gpsCoords ? (
                     <div className="ed-gps-row">
                       <span className="ed-gps-label">Latitude</span>
@@ -621,7 +1187,7 @@ export function EmployeeDashboard() {
                       <span className="ed-gps-value">{gpsCoords.lng}</span>
                     </div>
                   ) : (
-                    <p className="ed-no-gps">Noch keine GPS-Daten — drücke Check In oder Check Out.</p>
+                    <p className="ed-no-gps">Noch keine GPS-Daten — zuerst ein- oder ausstempeln.</p>
                   )}
 
                   {areaStatus === "inside" && (
@@ -647,8 +1213,8 @@ export function EmployeeDashboard() {
               <div className="ed-section-title"><h2>Arbeitszeit</h2></div>
               <div className="ed-card">
                 <p className="ed-hint">
-                  Jeder Check-in wird mit dem nächsten Check-out gepaart.
-                  Ein offener Check-in zählt bis jetzt.
+                  Jedes Einstempeln wird mit dem nächsten Ausstempeln gepaart.
+                  Ein offenes Einstempeln zählt bis jetzt.
                 </p>
 
                 {workedLoading ? (
@@ -678,7 +1244,7 @@ export function EmployeeDashboard() {
                             {workedTime.active ? "Aktiv" : "Inaktiv"}
                           </span>
                         </span>
-                        <span className="ed-worked-stat__label">Uhr</span>
+                        <span className="ed-worked-stat__label">Stempelung</span>
                       </div>
                     </div>
                     <p className="ed-hint" style={{ marginTop: "0.5rem", marginBottom: "1rem" }}>
@@ -691,8 +1257,8 @@ export function EmployeeDashboard() {
                       <>
                         <div className="ed-sessions__header">
                           <span>Status</span>
-                          <span>Check-in</span>
-                          <span>Check-out</span>
+                          <span>Eingestempelt</span>
+                          <span>Ausgestempelt</span>
                           <span>Dauer</span>
                         </div>
                         <ul className="ed-sessions">
@@ -913,7 +1479,7 @@ export function EmployeeDashboard() {
                     <span className="ed-empty-state__icon">✅</span>
                     <p className="ed-empty-state__text">Noch keine Sessions vorhanden.</p>
                     <p className="ed-hint" style={{ textAlign: "center" }}>
-                      Nach dem ersten Check-out erscheint deine Session hier.
+                      Nach dem ersten Ausstempeln erscheint deine Session hier.
                     </p>
                   </div>
                 ) : (
@@ -921,8 +1487,8 @@ export function EmployeeDashboard() {
                     <table className="ed-table">
                       <thead>
                         <tr>
-                          <th scope="col">Check-in</th>
-                          <th scope="col">Check-out</th>
+                          <th scope="col">Eingestempelt</th>
+                          <th scope="col">Ausgestempelt</th>
                           <th scope="col">Dauer</th>
                           <th scope="col">Status</th>
                           <th scope="col">Info</th>
@@ -958,7 +1524,7 @@ export function EmployeeDashboard() {
           {/* ═══ ATTENDANCE LOG ══════════════════════════════════════════ */}
           {activeTab === "logs" && (
             <div className="ed-section">
-              <div className="ed-section-title"><h2>Attendance Log</h2></div>
+              <div className="ed-section-title"><h2>Stempelprotokoll</h2></div>
               <div className="ed-card">
                 <p className="ed-hint">Deine letzten 20 Stempelungen, neueste zuerst.</p>
 
@@ -971,7 +1537,7 @@ export function EmployeeDashboard() {
                     <span className="ed-empty-state__icon">🕐</span>
                     <p className="ed-empty-state__text">Noch keine Stempelungen vorhanden.</p>
                     <p className="ed-hint" style={{ textAlign: "center" }}>
-                      Gehe zu „Check-in / Out" um deine erste Stempelung zu machen.
+                      Gehe zu „Stempeln & GPS“, um deine erste Stempelung zu machen.
                     </p>
                   </div>
                 ) : (
@@ -1012,7 +1578,7 @@ export function EmployeeDashboard() {
           {activeTab === "ai" && (
             <div className="ed-section">
               <div className="ed-section-title">
-                <h2>AI Reception Assistant</h2>
+                <h2>KI-Empfangsassistent</h2>
                 {aiMessages.length > 0 && (
                   <button
                     type="button"
@@ -1037,7 +1603,7 @@ export function EmployeeDashboard() {
                       <span>💬</span>
                       <p>Noch keine Fragen gestellt.</p>
                       <p className="ed-chat-empty-hint">
-                        Beispiel: „Wie mache ich einen Check-in in Opera?"
+                        Beispiel: „Wie erfasse ich eine Ankunft in Opera?"
                       </p>
                     </div>
                   )}
@@ -1158,8 +1724,8 @@ function normalizeTypeKey(type) {
 
 function formatTypeLabel(type) {
   const t = String(type || "").toLowerCase();
-  if (t === "checkin")  return "Check-in";
-  if (t === "checkout") return "Check-out";
+  if (t === "checkin")  return "Einstempeln";
+  if (t === "checkout") return "Ausstempeln";
   return type || "—";
 }
 

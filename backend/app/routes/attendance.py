@@ -25,7 +25,8 @@ from app.schemas.attendance import (
     WorkedTimeResponse,
 )
 from app.schemas.approvals import WorkSessionResponse
-from app.services.work_session_stats import get_employee_session_stats
+from app.services.employment_hours import resolved_month_target_hours
+from app.services.work_session_stats import get_employee_month_ws_stats, get_employee_session_stats
 from app.worked_time import compute_worked_time_payload
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ def worked_time_summary(
 ):
     data = compute_worked_time_payload(db, current_employee.id)
     ws_stats = get_employee_session_stats(db, current_employee.id)
+    month_ws = get_employee_month_ws_stats(db, current_employee.id)
+    month_target = resolved_month_target_hours(current_employee)
     return WorkedTimeResponse(
         **data,
         official_seconds=ws_stats["official_seconds"],
@@ -61,6 +64,9 @@ def worked_time_summary(
         pending_seconds=ws_stats["pending_seconds"],
         pending_hours=ws_stats["pending_hours"],
         pending_count=ws_stats["pending_count"],
+        month_target_hours=month_target,
+        official_hours_month=month_ws["official_hours"],
+        pending_hours_month=month_ws["pending_hours"],
     )
 
 

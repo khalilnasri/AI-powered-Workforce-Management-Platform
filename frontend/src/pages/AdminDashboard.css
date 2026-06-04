@@ -1516,6 +1516,15 @@
   border: 1px solid var(--border-2, #e2e8f0);
   animation: ad-modal-pop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
+.ad-modal.ad-modal--confirm {
+  max-width: 24rem;
+  max-height: none;
+}
+.ad-modal__summary--warn {
+  border-color: #fdba74;
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+  color: #9a3412;
+}
 @keyframes ad-modal-pop {
   from { opacity: 0; transform: scale(0.96) translateY(8px); }
   to { opacity: 1; transform: scale(1) translateY(0); }

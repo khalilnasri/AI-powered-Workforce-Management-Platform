@@ -72,6 +72,43 @@ def month_hours_summary_by_employee(db: Session) -> dict[int, dict[str, float]]:
     return out
 
 
+def get_employee_month_ws_stats(db: Session, employee_id: int) -> dict[str, float]:
+    """Genehmigte + korrigierte bzw. ausstehende Stunden im laufenden Berlin-Monat für einen Mitarbeiter."""
+    start_utc, end_utc = current_berlin_month_bounds_utc()
+    stmt = (
+        select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            WorkSession.status.in_(("approved", "corrected")),
+                            WorkSession.duration_seconds,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("off_sec"),
+            func.coalesce(
+                func.sum(
+                    case((WorkSession.status == "pending", WorkSession.duration_seconds), else_=0),
+                ),
+                0,
+            ).label("pend_sec"),
+        )
+        .where(WorkSession.employee_id == employee_id)
+        .where(WorkSession.checkin_time >= start_utc)
+        .where(WorkSession.checkin_time < end_utc)
+    )
+    row = db.execute(stmt).one()
+    off_sec = int(row.off_sec or 0)
+    pend_sec = int(row.pend_sec or 0)
+    return {
+        "official_hours": round(off_sec / 3600, 2),
+        "pending_hours": round(pend_sec / 3600, 2),
+    }
+
+
 def get_employee_session_stats(db: Session, employee_id: int) -> dict:
     """WorkSession-Statistiken für einen einzelnen Mitarbeiter."""
     sessions = db.scalars(
