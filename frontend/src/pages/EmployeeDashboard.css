@@ -239,6 +239,9 @@
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 1rem;
 }
+.ed-stats-grid.ed-stats-grid--overview-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .ed-stat-card {
   display: flex;
   align-items: center;
@@ -344,6 +347,15 @@
   margin-bottom: 0.875rem;
 }
 .ed-section-title h2 { margin: 0; font-size: 1rem; font-weight: 700; color: var(--ed-text); letter-spacing: -0.01em; }
+.ed-section-title__text h2 { margin: 0; }
+.ed-section-title__sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--ed-text-muted);
+  line-height: 1.35;
+  max-width: 42rem;
+}
 
 .ed-card {
   background: var(--ed-surface);
@@ -947,44 +959,64 @@
   height: 1.1rem;
 }
 
-/* ═══ Mitarbeiter-Dashboard: Übersicht + Monatskalender ═══════════════════════ */
+/* ═══ Mitarbeiter-Dashboard: Übersicht (Stempel oben, darunter 3 gleiche Spalten) ═ */
 .ed-overview {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.65rem;
+  min-width: 0;
+}
+.ed-overview--dashboard {
+  gap: 0.55rem;
+}
+.ed-overview__pre {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.ed-overview__tri-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
-  gap: 1.25rem;
-  align-items: start;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0.65rem 0.85rem;
+  min-width: 0;
+}
+.ed-overview__tri-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.ed-overview__tri-col > .ed-card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 @media (max-width: 960px) {
-  .ed-overview {
+  .ed-overview__tri-grid {
     grid-template-columns: 1fr;
   }
 }
 .ed-overview__primary {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.55rem;
   min-width: 0;
 }
-.ed-overview__aside {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 1rem;
-  min-width: 0;
-}
-.ed-overview__aside > .ed-card {
-  flex: 0 0 auto;
-}
-
-.ed-overview__metrics-row {
+.ed-overview__stack {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
+  gap: 0.5rem;
+  min-width: 0;
 }
-@media (max-width: 900px) {
-  .ed-overview__metrics-row {
+@media (max-width: 640px) {
+  .ed-overview__stack {
     grid-template-columns: 1fr;
   }
 }
@@ -998,20 +1030,13 @@
   font-size: 1.2rem;
 }
 
-.ed-overview__quick--aside {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-}
-.ed-overview__quick--aside .ed-btn {
-  margin-top: 0.75rem;
-  align-self: flex-start;
-}
-
 .ed-overview__live-shift {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.ed-overview__live-shift .ed-live-shift__idle {
+  flex: 0 0 auto;
 }
 .ed-live-shift__idle {
   margin: 0;
@@ -1181,6 +1206,55 @@
   color: var(--ed-text-2);
 }
 
+/* Kalender Mitte: gut lesbar, aber flacher (Tri-Spalte → weniger Scroll) */
+.ed-overview__cal-card--feature {
+  padding: 0.65rem 0.75rem 0.8rem;
+}
+.ed-overview__cal-card--feature .ed-cal {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__head {
+  margin-bottom: 0.45rem;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__title {
+  font-size: 1.05rem;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__nav {
+  width: 2.35rem;
+  height: 2.35rem;
+  font-size: 1.2rem;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__dow-cell {
+  font-size: 0.68rem;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__grid {
+  gap: 3px;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__cell {
+  aspect-ratio: auto;
+  min-height: 1.55rem;
+  max-height: 2.1rem;
+  font-size: 0.82rem;
+  padding: 0.18rem 0.12rem;
+  border-radius: 6px;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__cell--pad {
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__legend {
+  font-size: 0.68rem;
+  gap: 0.28rem 0.45rem;
+  padding-top: 0.4rem;
+  margin-top: 0.25rem;
+}
+.ed-overview__cal-card--feature .ed-cal--large .ed-cal__dot {
+  width: 5px;
+  height: 5px;
+}
+/* Legacy: falls noch woanders .ed-overview__extras genutzt wird */
 .ed-overview__extras {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1395,60 +1469,8 @@
   flex: 1;
   min-width: 0;
 }
-.ed-cal-expand {
-  flex-shrink: 0;
-}
 
-/* Vollbild-Overlay: Klick auf dunklen Bereich schließt */
-.ed-cal-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 1.25rem;
-  background: rgba(15, 23, 42, 0.48);
-  cursor: pointer;
-}
-.ed-cal-modal__panel {
-  cursor: default;
-  max-width: min(96vw, 560px);
-  width: 100%;
-  max-height: min(78vh, 640px);
-  overflow: auto;
-  background: var(--ed-surface);
-  border-radius: var(--ed-radius-lg);
-  border: 1px solid var(--ed-border);
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  padding: 1rem 1.25rem 1.25rem;
-}
-.ed-cal-modal__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.65rem;
-  border-bottom: 1px solid var(--ed-border);
-}
-.ed-cal-modal__title {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: var(--ed-text);
-}
-.ed-cal-modal__hint {
-  margin: 1rem 0 0;
-  font-size: 0.78rem;
-  color: rgba(248, 250, 252, 0.92);
-  text-align: center;
-  max-width: 28rem;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-/* Größere Kalenderdarstellung im Modal */
+/* Größere Kalenderdarstellung (Übersicht, size="large") */
 .ed-cal--large .ed-cal__head {
   margin-bottom: 1rem;
 }
@@ -1620,83 +1642,139 @@
 
 /* ── Dashboard Übersicht: kompakter, mehr auf einer Seite ─────────────────── */
 .ed-content--overview-dense {
-  padding: 0.85rem 1rem 1rem;
-  gap: 0.65rem;
+  padding: 0.4rem 0.55rem 0.45rem;
+  gap: 0.32rem;
+  min-height: 0;
 }
 .ed-content--overview-dense .ed-stats-grid {
-  gap: 0.5rem;
+  gap: 0.35rem;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 @media (max-width: 960px) {
-  .ed-content--overview-dense .ed-stats-grid {
+  .ed-content--overview-dense .ed-stats-grid:not(.ed-stats-grid--overview-4) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@media (max-width: 640px) {
+  .ed-content--overview-dense .ed-stats-grid.ed-stats-grid--overview-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 400px) {
+  .ed-content--overview-dense .ed-stats-grid.ed-stats-grid--overview-4 {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 480px) {
-  .ed-content--overview-dense .ed-stats-grid {
+  .ed-content--overview-dense .ed-stats-grid:not(.ed-stats-grid--overview-4) {
     grid-template-columns: 1fr;
   }
 }
 .ed-content--overview-dense .ed-stat-card {
-  padding: 0.55rem 0.65rem;
-  gap: 0.45rem;
+  padding: 0.32rem 0.42rem;
+  gap: 0.28rem;
 }
 .ed-content--overview-dense .ed-stat-card__icon {
-  width: 1.85rem;
-  height: 1.85rem;
-  font-size: 0.95rem;
+  width: 1.55rem;
+  height: 1.55rem;
+  font-size: 0.82rem;
 }
 .ed-content--overview-dense .ed-stat-card__value {
-  font-size: 1.05rem;
+  font-size: 0.92rem;
 }
 .ed-content--overview-dense .ed-stat-card__label {
-  font-size: 0.62rem;
+  font-size: 0.58rem;
 }
 .ed-content--overview-dense .ed-stat-card__hint {
-  font-size: 0.58rem;
-  line-height: 1.2;
+  font-size: 0.54rem;
+  line-height: 1.15;
   max-width: none;
 }
 
 .ed-content--overview-dense .ed-section-title {
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.15rem;
 }
 .ed-content--overview-dense .ed-section-title h2 {
-  font-size: 0.88rem;
+  font-size: 0.85rem;
+}
+.ed-content--overview-dense .ed-section-title__sub {
+  font-size: 0.64rem;
+  margin-top: 0.08rem;
+  line-height: 1.25;
+}
+.ed-content--overview-dense .ed-section-title--overview .ed-section-title__sub {
+  max-width: 72ch;
 }
 
-.ed-content--overview-dense .ed-overview {
-  gap: 0.65rem;
-  grid-template-columns: minmax(0, 1fr) minmax(200px, 260px);
+.ed-content--overview-dense .ed-overview__tri-grid {
+  gap: 0.35rem 0.45rem;
+}
+
+/* Nur die drei unteren Karten: kompakter */
+.ed-content--overview-dense .ed-overview__tri-col > .ed-card {
+  padding: 0.38rem 0.48rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__quick-title {
+  margin: 0 0 0.18rem;
+  font-size: 0.72rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__extra-hint {
+  margin: -0.08rem 0 0.22rem;
+  font-size: 0.56rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__shift-list {
+  margin: 0 0 0.28rem;
+  gap: 0.18rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__shift-row {
+  padding: 0.22rem 0.35rem;
+  font-size: 0.66rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__shift-loc {
+  font-size: 0.6rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__worked {
+  gap: 0.2rem;
+  margin-bottom: 0.28rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__worked-row {
+  padding: 0.22rem 0.35rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__worked-label {
+  font-size: 0.6rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__worked-val {
+  font-size: 0.74rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-btn--sm {
+  padding: 0.22rem 0.4rem;
+  font-size: 0.68rem;
 }
 .ed-content--overview-dense .ed-overview__primary,
-.ed-content--overview-dense .ed-overview__aside {
-  gap: 0.55rem;
-}
-.ed-content--overview-dense .ed-overview__metrics-row {
-  gap: 0.5rem;
+.ed-content--overview-dense .ed-overview__stack {
+  gap: 0.35rem;
 }
 
 .ed-content--overview-dense .ed-card {
-  padding: 0.65rem 0.8rem;
+  padding: 0.5rem 0.62rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget {
-  padding: 0.65rem 0.8rem;
+  padding: 0.5rem 0.62rem;
 }
 
 .ed-content--overview-dense .ed-overview__hero {
-  padding: 0.75rem 0.85rem;
+  padding: 0.42rem 0.55rem;
 }
 .ed-content--overview-dense .ed-overview__lede {
-  margin-bottom: 0.45rem;
-  font-size: 0.78rem;
-  line-height: 1.4;
+  margin-bottom: 0.28rem;
+  font-size: 0.68rem;
+  line-height: 1.32;
 }
 .ed-content--overview-dense .ed-status-row--hero {
-  margin-bottom: 0.45rem;
+  margin-bottom: 0.35rem;
 }
 .ed-content--overview-dense .ed-status-message {
-  font-size: 0.78rem;
+  font-size: 0.72rem;
 }
 .ed-content--overview-dense .ed-live-shift__hero-line {
   margin: 0 0 0.45rem;
@@ -1709,82 +1787,78 @@
   font-size: 1rem;
 }
 .ed-content--overview-dense .ed-hero-actions {
-  gap: 0.45rem;
+  gap: 0.35rem;
 }
 .ed-content--overview-dense .ed-btn--hero {
-  padding: 0.45rem 0.65rem;
-  font-size: 0.82rem;
-  min-height: 2.15rem;
+  padding: 0.32rem 0.45rem;
+  font-size: 0.74rem;
+  min-height: 1.65rem;
 }
 .ed-content--overview-dense .ed-hero-actions__hint {
-  margin: 0.3rem 0 0;
-  font-size: 0.62rem;
+  margin: 0.22rem 0 0;
+  font-size: 0.58rem;
 }
 
 .ed-content--overview-dense .ed-overview__quick-title {
-  margin: 0 0 0.35rem;
-  font-size: 0.8rem;
+  margin: 0 0 0.28rem;
+  font-size: 0.76rem;
 }
 .ed-content--overview-dense .ed-overview__quick-text {
-  margin: 0 0 0.45rem;
-  font-size: 0.76rem;
-  line-height: 1.35;
+  margin: 0 0 0.38rem;
+  font-size: 0.72rem;
+  line-height: 1.32;
 }
-.ed-content--overview-dense .ed-overview__quick--aside .ed-btn {
-  margin-top: 0.45rem;
-}
-
 .ed-content--overview-dense .ed-live-shift__since {
-  margin: 0 0 0.35rem;
-  font-size: 0.68rem;
+  margin: 0 0 0.28rem;
+  font-size: 0.62rem;
 }
 .ed-content--overview-dense .ed-live-shift__clock {
-  margin: 0 0 0.4rem;
-  padding: 0.4rem 0.3rem;
+  margin: 0 0 0.3rem;
+  padding: 0.28rem 0.22rem;
 }
 .ed-content--overview-dense .ed-live-shift__unit {
-  min-width: 2.35rem;
+  min-width: 1.95rem;
 }
 .ed-content--overview-dense .ed-live-shift__num {
-  font-size: 1.35rem;
+  font-size: 1.05rem;
 }
 .ed-content--overview-dense .ed-live-shift__colon {
-  font-size: 1.1rem;
-  padding-bottom: 0.65rem;
+  font-size: 0.92rem;
+  padding-bottom: 0.45rem;
 }
 .ed-content--overview-dense .ed-live-shift__cap {
-  font-size: 0.52rem;
-  margin-top: 0.15rem;
+  font-size: 0.48rem;
+  margin-top: 0.1rem;
 }
 .ed-content--overview-dense .ed-live-shift__hint {
-  font-size: 0.68rem;
+  font-size: 0.62rem;
 }
 
 .ed-content--overview-dense .ed-overview__month-budget-sub {
-  margin: -0.15rem 0 0.45rem;
-  font-size: 0.62rem;
-  line-height: 1.35;
+  margin: -0.18rem 0 0.32rem;
+  font-size: 0.58rem;
+  line-height: 1.3;
 }
 .ed-content--overview-dense .ed-overview__month-budget-rows {
-  gap: 0.28rem;
-  margin-bottom: 0.45rem;
+  gap: 0.22rem;
+  margin-bottom: 0.35rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget-row {
   padding: 0.3rem 0.45rem;
   font-size: 0.72rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget-remain {
-  padding: 0.5rem 0.45rem;
+  padding: 0.32rem 0.35rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget-remain-label {
-  font-size: 0.6rem;
-  margin-bottom: 0.12rem;
+  font-size: 0.55rem;
+  margin-bottom: 0.08rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget-remain-val {
-  font-size: 1.05rem;
+  font-size: 0.88rem;
 }
 .ed-content--overview-dense .ed-overview__month-budget--in-primary .ed-overview__month-budget-remain-val {
-  font-size: 1.05rem;
+  font-size: 0.88rem;
 }
 
 .ed-content--overview-dense .ed-overview__extras {
@@ -1822,37 +1896,53 @@
   font-size: 0.82rem;
 }
 
-.ed-content--overview-dense .ed-cal__head {
-  margin-bottom: 0.45rem;
+/* Übersicht: Kalender in unterer Zeile — kompakt */
+.ed-content--overview-dense .ed-overview__cal-card--feature {
+  padding: 0.45rem 0.52rem 0.55rem;
 }
-.ed-content--overview-dense .ed-cal__title {
-  font-size: 0.82rem;
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__head {
+  margin-bottom: 0.32rem;
 }
-.ed-content--overview-dense .ed-cal__nav {
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__title {
+  font-size: 0.88rem;
+}
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__nav {
   width: 1.85rem;
   height: 1.85rem;
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
-.ed-content--overview-dense .ed-cal__dow-cell {
-  font-size: 0.6rem;
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__dow-cell {
+  font-size: 0.58rem;
 }
-.ed-content--overview-dense .ed-cal__cell {
-  min-height: 1.55rem;
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__cell {
+  min-height: 1.28rem;
+  max-height: 1.75rem;
   font-size: 0.68rem;
+  padding: 0.1rem 0.06rem;
 }
-.ed-content--overview-dense .ed-cal__legend {
-  padding: 0.4rem 0 0;
-  margin: 0.25rem 0 0;
-  gap: 0.35rem 0.55rem;
-  font-size: 0.6rem;
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__cell--pad {
+  min-height: 0;
+  max-height: none;
+  padding: 0;
 }
-.ed-content--overview-dense .ed-card-title.ed-overview__cal-heading {
-  margin-bottom: 0.35rem;
-  font-size: 0.82rem;
+.ed-content--overview-dense .ed-overview__cal-card--feature .ed-cal--large .ed-cal__legend {
+  font-size: 0.58rem;
+  gap: 0.18rem 0.35rem;
+  padding-top: 0.28rem;
+  margin-top: 0.15rem;
 }
-.ed-content--overview-dense .ed-overview__cal-head {
-  margin-bottom: 0.35rem;
-  gap: 0.35rem;
+.ed-content--overview-dense .ed-overview__tri-col .ed-card-title.ed-overview__cal-heading,
+.ed-content--overview-dense .ed-overview__tri-col .ed-overview__cal-head {
+  margin-bottom: 0.22rem;
+}
+.ed-content--overview-dense .ed-overview__tri-col .ed-card-title.ed-overview__cal-heading {
+  font-size: 0.74rem;
+}
+
+@media (max-height: 860px) {
+  .ed-content--overview-dense .ed-section-title__sub {
+    display: none;
+  }
 }
 
 /* ── Responsive tweaks ─────────────────────────────────────────────── */

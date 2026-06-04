@@ -372,7 +372,6 @@ export function EmployeeDashboard() {
   const [leaveFormBusy,       setLeaveFormBusy]       = useState(false);
   const [leaveFormError,      setLeaveFormError]      = useState(null);
   const [leaveFormSuccess,    setLeaveFormSuccess]    = useState(null);
-  const [calendarModalOpen,   setCalendarModalOpen]   = useState(false);
 
   // ── AI Chat ───────────────────────────────────────────────────────────────
   // Jede Nachricht: { role: "user"|"assistant", content: string, sources: [] }
@@ -470,24 +469,6 @@ export function EmployeeDashboard() {
   useEffect(() => {
     if (activeTab === "leave" || activeTab === "overview") fetchMyLeaveRequests();
   }, [activeTab, fetchMyLeaveRequests]);
-
-  useEffect(() => {
-    if (activeTab !== "overview") setCalendarModalOpen(false);
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (!calendarModalOpen) return undefined;
-    const onKey = (e) => {
-      if (e.key === "Escape") setCalendarModalOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [calendarModalOpen]);
 
   // Automatisch zum Ende des Chats scrollen wenn neue Nachricht kommt
   useEffect(() => {
@@ -791,7 +772,7 @@ export function EmployeeDashboard() {
         <div className={`ed-content${activeTab === "overview" ? " ed-content--overview-dense" : ""}`}>
 
           {/* Stats cards — immer sichtbar */}
-          <div className="ed-stats-grid">
+          <div className={`ed-stats-grid${activeTab === "overview" ? " ed-stats-grid--overview-4" : ""}`}>
             <div className={`ed-stat-card ed-stat-card--${isCheckedIn ? "green" : "blue"}`}>
               <div className="ed-stat-card__icon">{isCheckedIn ? "🟢" : "⏸"}</div>
               <div className="ed-stat-card__body">
@@ -850,170 +831,181 @@ export function EmployeeDashboard() {
           {/* ═══ DASHBOARD (Übersicht + Kalender + Stempeln) ═══════════════════ */}
           {activeTab === "overview" && (
             <div className="ed-section">
-              <div className="ed-section-title">
-                <h2>Übersicht</h2>
+              <div className="ed-section-title ed-section-title--overview">
+                <div className="ed-section-title__text">
+                  <h2>Übersicht</h2>
+                  <p className="ed-section-title__sub">Stempeln, Monatsstunden, Kalender und nächste Termine</p>
+                </div>
               </div>
-              <div className="ed-overview">
-                <div className="ed-overview__primary">
-                  <div className="ed-card ed-overview__hero">
-                    <p className="ed-hint ed-overview__lede">
-                      Schnell stempeln — der Browser-Standort wird genutzt. Unter{" "}
-                      <button type="button" className="ed-inline-link" onClick={() => setActiveTab("checkin")}>
-                        Stempeln &amp; GPS
-                      </button>{" "}
-                      siehst du Rohkoordinaten und die Serverantwort.
-                    </p>
-
-                    {statusLoading ? (
-                      <p className="ed-hint">Status wird geladen…</p>
-                    ) : statusError ? (
-                      <p className="ed-alert" role="alert">{statusError}</p>
-                    ) : attendanceStatus ? (
-                      <div className="ed-status-row ed-status-row--hero">
-                        <span className={`ed-badge ed-badge--${isCheckedIn ? "green" : "gray"}`}>
-                          {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
-                        </span>
-                        <p className="ed-status-message">{localizeAttendanceMessage(attendanceStatus.message)}</p>
-                      </div>
-                    ) : null}
-
-                    <div className="ed-hero-actions">
-                      <button
-                        type="button"
-                        className="ed-btn ed-btn--checkin ed-btn--hero"
-                        onClick={() => runGpsThenPost(CHECKIN_URL)}
-                        disabled={
-                          gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkin
-                        }
-                      >
-                        {gpsBusy && attendanceStatus?.can_checkin ? "Standort wird ermittelt…" : "✔ Einstempeln"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ed-btn ed-btn--checkout ed-btn--hero"
-                        onClick={() => runGpsThenPost(CHECKOUT_URL)}
-                        disabled={
-                          gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkout
-                        }
-                      >
-                        {gpsBusy && attendanceStatus?.can_checkout ? "Standort wird ermittelt…" : "✖ Ausstempeln"}
-                      </button>
-                    </div>
-                    <p className="ed-hint ed-hero-actions__hint">
-                      Ausgegraute Taste: Aktion gerade nicht möglich (siehe Status oben).
-                    </p>
-
-                    {attendanceError && (
-                      <p className="ed-alert" role="alert">{attendanceError}</p>
-                    )}
-                    {gpsError && (
-                      <p className="ed-alert" role="alert">{gpsError}</p>
-                    )}
-                  </div>
-
-                  <div className="ed-overview__metrics-row">
-                    <div className="ed-card ed-overview__live-shift">
-                      <h3 className="ed-overview__quick-title">Laufende Schicht</h3>
-                      {isCheckedIn && !activeCheckinIso && (
-                        <p className="ed-hint">Zeit wird geladen…</p>
-                      )}
-                      {isCheckedIn && activeCheckinIso && liveShiftParts && (
-                        <>
-                          <p className="ed-live-shift__since">
-                            Gestartet: <time dateTime={activeCheckinIso}>{formatLogTime(activeCheckinIso)}</time>
-                          </p>
-                          <div className="ed-live-shift__clock" aria-live="polite" aria-atomic="true">
-                            <span className="ed-live-shift__unit">
-                              <span className="ed-live-shift__num">{pad2(liveShiftParts.h)}</span>
-                              <span className="ed-live-shift__cap">Std.</span>
-                            </span>
-                            <span className="ed-live-shift__colon" aria-hidden>:</span>
-                            <span className="ed-live-shift__unit">
-                              <span className="ed-live-shift__num">{pad2(liveShiftParts.m)}</span>
-                              <span className="ed-live-shift__cap">Min.</span>
-                            </span>
-                            <span className="ed-live-shift__colon" aria-hidden>:</span>
-                            <span className="ed-live-shift__unit">
-                              <span className="ed-live-shift__num">{pad2(liveShiftParts.s)}</span>
-                              <span className="ed-live-shift__cap">Sek.</span>
-                            </span>
-                          </div>
-                          <p className="ed-live-shift__hint">
-                            Zum Beenden: <strong>Ausstempeln</strong> (Button oben).
-                          </p>
-                        </>
-                      )}
-                      {!isCheckedIn && (
-                        <p className="ed-hint ed-live-shift__idle">
-                          Keine laufende Schicht. Nach <strong>Einstempeln</strong> erscheint hier die Live-Zeit
-                          (Std. · Min. · Sek.).
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="ed-card ed-overview__month-budget ed-overview__month-budget--in-primary">
-                      <p className="ed-card-title ed-overview__cal-heading">Stunden im Monat</p>
-                      <p className="ed-overview__month-budget-sub">
-                        {new Date().toLocaleString("de-DE", { month: "long", year: "numeric" })} · Monatssoll minus
-                        genehmigte/korrigierte Sessions
+              <div className="ed-overview ed-overview--dashboard">
+                <div className="ed-overview__pre">
+                  <div className="ed-overview__primary">
+                    <div className="ed-card ed-overview__hero">
+                      <p className="ed-hint ed-overview__lede">
+                        Stempeln mit Browser-Standort. Details unter{" "}
+                        <button type="button" className="ed-inline-link" onClick={() => setActiveTab("checkin")}>
+                          Stempeln &amp; GPS
+                        </button>
+                        .
                       </p>
-                      {workedLoading ? (
-                        <p className="ed-hint">Wird geladen…</p>
-                      ) : workedError ? (
-                        <p className="ed-alert" role="alert">{workedError}</p>
-                      ) : !workedTime ? (
-                        <p className="ed-hint">Keine Daten.</p>
-                      ) : monthHoursRemain ? (
-                        <>
-                          <div className="ed-overview__month-budget-rows">
-                            <div className="ed-overview__month-budget-row">
-                              <span>Monatssoll</span>
-                              <strong>{monthHoursRemain.target} h</strong>
-                            </div>
-                            <div className="ed-overview__month-budget-row">
-                              <span>Offiziell (Monat)</span>
-                              <strong className="ed-overview__month-budget-done">
-                                {monthHoursRemain.done.toFixed(1).replace(/\.0$/, "")} h
-                              </strong>
-                            </div>
-                            {monthHoursRemain.pend > 0 && (
-                              <div className="ed-overview__month-budget-row ed-overview__month-budget-row--muted">
-                                <span>Davon ausstehend</span>
-                                <strong>{monthHoursRemain.pend.toFixed(1).replace(/\.0$/, "")} h</strong>
-                              </div>
-                            )}
-                          </div>
-                          <div
-                            className={`ed-overview__month-budget-remain${
-                              monthHoursRemain.remain > 0 ? "" : " ed-overview__month-budget-remain--done"
-                            }`}
-                            role="status"
-                          >
-                            {monthHoursRemain.remain > 0 ? (
-                              <>
-                                <span className="ed-overview__month-budget-remain-label">Noch zu leisten</span>
-                                <span className="ed-overview__month-budget-remain-val">
-                                  ca. {monthHoursRemain.remain.toFixed(1).replace(/\.0$/, "")} h
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="ed-overview__month-budget-remain-label">Monatssoll</span>
-                                <span className="ed-overview__month-budget-remain-val">
-                                  erreicht
-                                  {monthHoursRemain.remain < 0
-                                    ? ` · +${Math.abs(monthHoursRemain.remain).toFixed(1).replace(/\.0$/, "")} h über Soll`
-                                    : ""}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </>
+
+                      {statusLoading ? (
+                        <p className="ed-hint">Status wird geladen…</p>
+                      ) : statusError ? (
+                        <p className="ed-alert" role="alert">{statusError}</p>
+                      ) : attendanceStatus ? (
+                        <div className="ed-status-row ed-status-row--hero">
+                          <span className={`ed-badge ed-badge--${isCheckedIn ? "green" : "gray"}`}>
+                            {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
+                          </span>
+                          <p className="ed-status-message">{localizeAttendanceMessage(attendanceStatus.message)}</p>
+                        </div>
                       ) : null}
+
+                      <div className="ed-hero-actions">
+                        <button
+                          type="button"
+                          className="ed-btn ed-btn--checkin ed-btn--hero"
+                          onClick={() => runGpsThenPost(CHECKIN_URL)}
+                          disabled={
+                            gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkin
+                          }
+                        >
+                          {gpsBusy && attendanceStatus?.can_checkin ? "Standort wird ermittelt…" : "✔ Einstempeln"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ed-btn ed-btn--checkout ed-btn--hero"
+                          onClick={() => runGpsThenPost(CHECKOUT_URL)}
+                          disabled={
+                            gpsBusy || statusLoading || Boolean(statusError) || !attendanceStatus?.can_checkout
+                          }
+                        >
+                          {gpsBusy && attendanceStatus?.can_checkout ? "Standort wird ermittelt…" : "✖ Ausstempeln"}
+                        </button>
+                      </div>
+                      <p className="ed-hint ed-hero-actions__hint">
+                        Ausgegraute Taste: Aktion gerade nicht möglich (siehe Status oben).
+                      </p>
+
+                      {attendanceError && (
+                        <p className="ed-alert" role="alert">{attendanceError}</p>
+                      )}
+                      {gpsError && (
+                        <p className="ed-alert" role="alert">{gpsError}</p>
+                      )}
+                    </div>
+
+                    <div className="ed-overview__stack">
+                      <div className="ed-card ed-overview__live-shift">
+                        <h3 className="ed-overview__quick-title">Laufende Schicht</h3>
+                        {isCheckedIn && !activeCheckinIso && (
+                          <p className="ed-hint">Zeit wird geladen…</p>
+                        )}
+                        {isCheckedIn && activeCheckinIso && liveShiftParts && (
+                          <>
+                            <p className="ed-live-shift__since">
+                              Gestartet: <time dateTime={activeCheckinIso}>{formatLogTime(activeCheckinIso)}</time>
+                            </p>
+                            <div className="ed-live-shift__clock" aria-live="polite" aria-atomic="true">
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.h)}</span>
+                                <span className="ed-live-shift__cap">Std.</span>
+                              </span>
+                              <span className="ed-live-shift__colon" aria-hidden>:</span>
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.m)}</span>
+                                <span className="ed-live-shift__cap">Min.</span>
+                              </span>
+                              <span className="ed-live-shift__colon" aria-hidden>:</span>
+                              <span className="ed-live-shift__unit">
+                                <span className="ed-live-shift__num">{pad2(liveShiftParts.s)}</span>
+                                <span className="ed-live-shift__cap">Sek.</span>
+                              </span>
+                            </div>
+                            <p className="ed-live-shift__hint">
+                              Zum Beenden: <strong>Ausstempeln</strong> (Button oben).
+                            </p>
+                          </>
+                        )}
+                        {!isCheckedIn && (
+                          <p className="ed-hint ed-live-shift__idle">
+                            Keine laufende Schicht. Nach <strong>Einstempeln</strong> erscheint hier die Live-Zeit
+                            (Std. · Min. · Sek.).
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="ed-card ed-overview__month-budget ed-overview__month-budget--in-primary">
+                        <p className="ed-card-title ed-overview__cal-heading">Stunden im Monat</p>
+                        <p className="ed-overview__month-budget-sub">
+                          {new Date().toLocaleString("de-DE", { month: "long", year: "numeric" })} · Monatssoll minus
+                          genehmigte/korrigierte Sessions
+                        </p>
+                        {workedLoading ? (
+                          <p className="ed-hint">Wird geladen…</p>
+                        ) : workedError ? (
+                          <p className="ed-alert" role="alert">{workedError}</p>
+                        ) : !workedTime ? (
+                          <p className="ed-hint">Keine Daten.</p>
+                        ) : monthHoursRemain ? (
+                          <>
+                            <div className="ed-overview__month-budget-rows">
+                              <div className="ed-overview__month-budget-row">
+                                <span>Monatssoll</span>
+                                <strong>{monthHoursRemain.target} h</strong>
+                              </div>
+                              <div className="ed-overview__month-budget-row">
+                                <span>Offiziell (Monat)</span>
+                                <strong className="ed-overview__month-budget-done">
+                                  {monthHoursRemain.done.toFixed(1).replace(/\.0$/, "")} h
+                                </strong>
+                              </div>
+                              {monthHoursRemain.pend > 0 && (
+                                <div className="ed-overview__month-budget-row ed-overview__month-budget-row--muted">
+                                  <span>Davon ausstehend</span>
+                                  <strong>{monthHoursRemain.pend.toFixed(1).replace(/\.0$/, "")} h</strong>
+                                </div>
+                              )}
+                            </div>
+                            <div
+                              className={`ed-overview__month-budget-remain${
+                                monthHoursRemain.remain > 0 ? "" : " ed-overview__month-budget-remain--done"
+                              }`}
+                              role="status"
+                            >
+                              {monthHoursRemain.remain > 0 ? (
+                                <>
+                                  <span className="ed-overview__month-budget-remain-label">Noch zu leisten</span>
+                                  <span className="ed-overview__month-budget-remain-val">
+                                    ca. {monthHoursRemain.remain.toFixed(1).replace(/\.0$/, "")} h
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="ed-overview__month-budget-remain-label">Monatssoll</span>
+                                  <span className="ed-overview__month-budget-remain-val">
+                                    erreicht
+                                    {monthHoursRemain.remain < 0
+                                      ? ` · +${Math.abs(monthHoursRemain.remain).toFixed(1).replace(/\.0$/, "")} h über Soll`
+                                      : ""}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
+                </div>
 
-                  <div className="ed-overview__extras">
+                <div
+                  className="ed-overview__tri-grid"
+                  role="group"
+                  aria-label="Schichten, Kalender und Arbeitszeit"
+                >
+                  <div className="ed-overview__tri-col ed-overview__tri-col--shifts">
                     <div className="ed-card ed-overview__extra">
                       <h3 className="ed-overview__quick-title">Meine Schichten</h3>
                       <p className="ed-hint ed-overview__extra-hint">Nächste Termine (ab heute).</p>
@@ -1054,7 +1046,35 @@ export function EmployeeDashboard() {
                         Alle Schichten →
                       </button>
                     </div>
+                  </div>
 
+                  <div className="ed-overview__tri-col ed-overview__tri-col--calendar">
+                    <div className="ed-card ed-overview__cal-card ed-overview__cal-card--feature">
+                      <div className="ed-overview__cal-head">
+                        <p className="ed-card-title ed-overview__cal-heading">Kalender</p>
+                      </div>
+                      {leaveListLoading && myLeaveRequests.length === 0 ? (
+                        <p className="ed-hint">Kalenderdaten werden geladen…</p>
+                      ) : (
+                        <EmployeeMonthCalendar
+                          year={calYear}
+                          monthIndex={calMonthIndex}
+                          onPrev={calPrev}
+                          onNext={calNext}
+                          plannedShiftDates={shiftDateSet}
+                          workedShiftDates={workedShiftDateSet}
+                          leaveDayMap={leaveDayMap}
+                          todayIso={localIsoToday()}
+                          size="large"
+                        />
+                      )}
+                      {shiftsError && (
+                        <p className="ed-hint" role="note">Schichten: {shiftsError}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="ed-overview__tri-col ed-overview__tri-col--worked">
                     <div className="ed-card ed-overview__extra">
                       <h3 className="ed-overview__quick-title">Arbeitszeit</h3>
                       <p className="ed-hint ed-overview__extra-hint">Offizielle und ausstehende Zeiten.</p>
@@ -1098,62 +1118,6 @@ export function EmployeeDashboard() {
                     </div>
                   </div>
                 </div>
-
-                <aside className="ed-overview__aside">
-                  <div className="ed-card ed-overview__cal-card">
-                    <div className="ed-overview__cal-head">
-                      <p className="ed-card-title ed-overview__cal-heading">Kalender</p>
-                      <button
-                        type="button"
-                        className="ed-btn ed-btn--ghost ed-btn--sm ed-cal-expand"
-                        onClick={() => setCalendarModalOpen(true)}
-                        disabled={leaveListLoading && myLeaveRequests.length === 0}
-                      >
-                        Größer
-                      </button>
-                    </div>
-                    {leaveListLoading && myLeaveRequests.length === 0 ? (
-                      <p className="ed-hint">Kalenderdaten werden geladen…</p>
-                    ) : (
-                      <EmployeeMonthCalendar
-                        year={calYear}
-                        monthIndex={calMonthIndex}
-                        onPrev={calPrev}
-                        onNext={calNext}
-                        plannedShiftDates={shiftDateSet}
-                        workedShiftDates={workedShiftDateSet}
-                        leaveDayMap={leaveDayMap}
-                        todayIso={localIsoToday()}
-                      />
-                    )}
-                    {shiftsError && (
-                      <p className="ed-hint" role="note">Schichten: {shiftsError}</p>
-                    )}
-                  </div>
-
-                  <div className="ed-card ed-overview__quick ed-overview__quick--aside">
-                    <h3 className="ed-overview__quick-title">Urlaub &amp; Anträge</h3>
-                    {leaveSummaryLoading ? (
-                      <p className="ed-hint">Urlaub wird geladen…</p>
-                    ) : leaveSummaryError ? (
-                      <p className="ed-alert" role="alert">{leaveSummaryError}</p>
-                    ) : leaveSummary ? (
-                      <p className="ed-overview__quick-text">
-                        <strong>{new Date().getFullYear()}:</strong> noch buchbar{" "}
-                        <strong>{leaveSummary.available_days}</strong> Tage · Soll {leaveSummary.annual_leave_days} ·
-                        genommen {leaveSummary.used_days_this_year} · Rest {leaveSummary.remaining_days}
-                        {leaveSummary.pending_requests > 0
-                          ? ` · ${leaveSummary.pending_requests} Antrag offen`
-                          : ""}
-                      </p>
-                    ) : (
-                      <p className="ed-hint">Keine Urlaubsdaten.</p>
-                    )}
-                    <button type="button" className="ed-btn ed-btn--ghost ed-btn--sm" onClick={() => setActiveTab("leave")}>
-                      Urlaub verwalten →
-                    </button>
-                  </div>
-                </aside>
               </div>
             </div>
           )}
@@ -1731,47 +1695,6 @@ export function EmployeeDashboard() {
 
         </div>
       </div>
-
-      {calendarModalOpen && (
-        <div
-          className="ed-cal-modal"
-          role="presentation"
-          onClick={() => setCalendarModalOpen(false)}
-        >
-          <div
-            className="ed-cal-modal__panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ed-cal-modal-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="ed-cal-modal__toolbar">
-              <h2 id="ed-cal-modal-title" className="ed-cal-modal__title">
-                Kalender
-              </h2>
-              <button
-                type="button"
-                className="ed-btn ed-btn--ghost ed-btn--sm"
-                onClick={() => setCalendarModalOpen(false)}
-              >
-                Schließen
-              </button>
-            </div>
-            <EmployeeMonthCalendar
-              year={calYear}
-              monthIndex={calMonthIndex}
-              onPrev={calPrev}
-              onNext={calNext}
-              plannedShiftDates={shiftDateSet}
-              workedShiftDates={workedShiftDateSet}
-              leaveDayMap={leaveDayMap}
-              todayIso={localIsoToday()}
-              size="large"
-            />
-          </div>
-          <p className="ed-cal-modal__hint">Klick auf den dunklen Bereich oder Esc schließt die Ansicht.</p>
-        </div>
-      )}
     </div>
   );
 }
