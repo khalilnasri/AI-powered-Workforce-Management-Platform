@@ -611,6 +611,10 @@ export function AdminDashboard() {
   const [leaveModalError, setLeaveModalError] = useState(null);
   const [leaveModalBusy, setLeaveModalBusy] = useState(false);
 
+  /** Bestätigung vor „Löschen“ (Deaktivieren) in der Mitarbeitertabelle */
+  const [empDeactivateModal, setEmpDeactivateModal] = useState(null);
+  const [empDeactivateBusy, setEmpDeactivateBusy] = useState(false);
+
   // ── Location form ─────────────────────────────────────────────────────────
   const [locEditId, setLocEditId]   = useState(null);
   const [locName, setLocName]       = useState("");
@@ -1085,15 +1089,29 @@ export function AdminDashboard() {
     } finally { setEditEmpBusy(false); }
   }
 
-  async function handleToggleActive(emp) {
-    const action = emp.is_active ? "deactivate" : "activate";
-    if (!confirm(`Mitarbeiter „${emp.name}" wirklich ${emp.is_active ? "deaktivieren" : "aktivieren"}?`)) return;
+  async function handleActivateEmployee(emp) {
+    if (!confirm(`Mitarbeiter „${emp.name}" wirklich wieder aktivieren?`)) return;
     try {
-      await apiClient.patch(`${EMPLOYEES_URL}/${emp.id}/${action}`);
+      await apiClient.patch(`${EMPLOYEES_URL}/${emp.id}/activate`);
       await refreshAll();
     } catch (err) {
       const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
       alert(typeof d === "string" ? d : "Aktion fehlgeschlagen.");
+    }
+  }
+
+  async function confirmEmpDeactivate() {
+    if (!empDeactivateModal) return;
+    setEmpDeactivateBusy(true);
+    try {
+      await apiClient.patch(`${EMPLOYEES_URL}/${empDeactivateModal.id}/deactivate`);
+      setEmpDeactivateModal(null);
+      await refreshAll();
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      alert(typeof d === "string" ? d : "Aktion fehlgeschlagen.");
+    } finally {
+      setEmpDeactivateBusy(false);
     }
   }
 
@@ -1940,7 +1958,6 @@ export function AdminDashboard() {
                                 >
                                   {(row.hours_official_month ?? 0).toFixed(1).replace(/\.0$/, "")}/{row.hours_target_month ?? 160}
                                 </button>
-                                <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
                                 <button
                                   type="button"
                                   className="ad-btn ad-btn--sm ad-btn--urlaub"
@@ -1949,10 +1966,24 @@ export function AdminDashboard() {
                                 >
                                   Urlaub
                                 </button>
-                                <button className={`ad-btn ad-btn--sm ${row.is_active ? "ad-btn--danger" : "ad-btn--success"}`}
-                                  onClick={() => handleToggleActive(row)}>
-                                  {row.is_active ? "Deaktivieren" : "Aktivieren"}
-                                </button>
+                                <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
+                                {row.is_active ? (
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--sm ad-btn--danger"
+                                    onClick={() => setEmpDeactivateModal(row)}
+                                  >
+                                    Löschen
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--sm ad-btn--success"
+                                    onClick={() => handleActivateEmployee(row)}
+                                  >
+                                    Aktivieren
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -3171,6 +3202,66 @@ export function AdminDashboard() {
 
         </main>
       </div>
+
+      {empDeactivateModal && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget && !empDeactivateBusy) setEmpDeactivateModal(null);
+          }}
+        >
+          <div
+            className="ad-modal ad-modal--confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-emp-deactivate-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ad-modal__header">
+              <div>
+                <h2 id="ad-emp-deactivate-title" className="ad-modal__title">Mitarbeiter löschen?</h2>
+                <p className="ad-modal__subtitle">
+                  {empDeactivateModal.name} ({empDeactivateModal.email})
+                </p>
+              </div>
+              <button
+                type="button"
+                className="ad-modal__close"
+                onClick={() => { if (!empDeactivateBusy) setEmpDeactivateModal(null); }}
+                disabled={empDeactivateBusy}
+                aria-label="Schließen"
+              >
+                ×
+              </button>
+            </div>
+            <div className="ad-modal__body">
+              <p className="ad-modal__summary ad-modal__summary--warn" role="alert">
+                Der Zugang wird gesperrt und der Mitarbeiter kann sich nicht mehr anmelden. Daten bleiben erhalten;
+                Sie können den Mitarbeiter später über <strong>Aktivieren</strong> wieder freischalten.
+              </p>
+              <div className="ad-modal__footer ad-modal__footer--modal-end">
+                <button
+                  type="button"
+                  className="ad-btn ad-btn--ghost"
+                  onClick={() => setEmpDeactivateModal(null)}
+                  disabled={empDeactivateBusy}
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="button"
+                  className="ad-btn ad-btn--danger"
+                  onClick={confirmEmpDeactivate}
+                  disabled={empDeactivateBusy}
+                >
+                  {empDeactivateBusy ? "Wird ausgeführt…" : "Löschen bestätigen"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {hoursModalOpen && hoursModalRow && (
         <div

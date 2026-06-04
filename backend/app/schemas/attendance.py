@@ -63,3 +63,7 @@ class WorkedTimeResponse(BaseModel):
     pending_seconds: int = 0
     pending_hours: float = 0.0
     pending_count: int = 0
+    # Laufender Kalendermonat (Europe/Berlin), WorkSession-basiert
+    month_target_hours: int = 160
+    official_hours_month: float = 0.0
+    pending_hours_month: float = 0.0
