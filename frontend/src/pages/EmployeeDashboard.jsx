@@ -146,6 +146,25 @@ function enumerateRequestDates(isoStart, isoEnd) {
   return out;
 }
 
+/** Kalendertag YYYY-MM-DD in lokaler Zeitzone (für Stempel-Sessions). */
+function localIsoDateFromInstant(isoString) {
+  if (!isoString) return null;
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function localIsoToday() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 /** Zeitpunkt des Einstempelns der offenen Besuchssession (für Live-Zähler). */
 function getOpenSessionCheckinIso(workedTime) {
   if (!workedTime?.active || !Array.isArray(workedTime.sessions)) return null;
@@ -189,22 +208,25 @@ function useTickingNow(enabled) {
   }, [enabled]);
 }
 
-/** Kalender + Legende (Schicht- & Urlaubstage) */
+/** Kalender + Legende (geplant / gestempelt / Urlaub) */
 function EmployeeMonthCalendar({
   year,
   monthIndex,
   onPrev,
   onNext,
-  shiftDates,
+  plannedShiftDates,
+  workedShiftDates,
   leaveDayMap,
   todayIso,
+  size = "default",
 }) {
   const cells = buildMonthCells(year, monthIndex);
   const title = new Date(year, monthIndex, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
   const dow = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const calClass = size === "large" ? "ed-cal ed-cal--large" : "ed-cal";
 
   return (
-    <div className="ed-cal">
+    <div className={calClass}>
       <div className="ed-cal__head">
         <button type="button" className="ed-cal__nav" onClick={onPrev} aria-label="Vorheriger Monat">‹</button>
         <h3 className="ed-cal__title">{title}</h3>
@@ -219,7 +241,8 @@ function EmployeeMonthCalendar({
         {cells.map((c) => {
           if (c.kind === "pad") return <div key={c.key} className="ed-cal__cell ed-cal__cell--pad" aria-hidden />;
           const isToday = c.iso === todayIso;
-          const hasShift = shiftDates?.has?.(c.iso);
+          const hasPlanned = plannedShiftDates?.has?.(c.iso);
+          const hasWorked = workedShiftDates?.has?.(c.iso);
           const leave = leaveDayMap?.get?.(c.iso);
           return (
             <div
@@ -228,9 +251,10 @@ function EmployeeMonthCalendar({
               role="gridcell"
             >
               <span className="ed-cal__num">{c.day}</span>
-              {(hasShift || leave) && (
+              {(hasPlanned || hasWorked || leave) && (
                 <span className="ed-cal__dots" aria-hidden>
-                  {hasShift && <span className="ed-cal__dot ed-cal__dot--shift" />}
+                  {hasPlanned && <span className="ed-cal__dot ed-cal__dot--planned" title="Geplante Schicht" />}
+                  {hasWorked && <span className="ed-cal__dot ed-cal__dot--worked" title="Gearbeitet (Einstempelung)" />}
                   {leave === "approved" && <span className="ed-cal__dot ed-cal__dot--leave-ok" />}
                   {leave === "pending" && <span className="ed-cal__dot ed-cal__dot--leave-pend" />}
                 </span>
@@ -240,7 +264,8 @@ function EmployeeMonthCalendar({
         })}
       </div>
       <ul className="ed-cal__legend">
-        <li><span className="ed-cal__dot ed-cal__dot--shift" /> Schicht</li>
+        <li><span className="ed-cal__dot ed-cal__dot--planned" /> Geplante Schicht</li>
+        <li><span className="ed-cal__dot ed-cal__dot--worked" /> Gearbeitet (Stempel)</li>
         <li><span className="ed-cal__dot ed-cal__dot--leave-ok" /> Urlaub genehmigt</li>
         <li><span className="ed-cal__dot ed-cal__dot--leave-pend" /> Urlaub offen</li>
       </ul>
@@ -347,6 +372,7 @@ export function EmployeeDashboard() {
   const [leaveFormBusy,       setLeaveFormBusy]       = useState(false);
   const [leaveFormError,      setLeaveFormError]      = useState(null);
   const [leaveFormSuccess,    setLeaveFormSuccess]    = useState(null);
+  const [calendarModalOpen,   setCalendarModalOpen]   = useState(false);
 
   // ── AI Chat ───────────────────────────────────────────────────────────────
   // Jede Nachricht: { role: "user"|"assistant", content: string, sources: [] }
@@ -444,6 +470,24 @@ export function EmployeeDashboard() {
   useEffect(() => {
     if (activeTab === "leave" || activeTab === "overview") fetchMyLeaveRequests();
   }, [activeTab, fetchMyLeaveRequests]);
+
+  useEffect(() => {
+    if (activeTab !== "overview") setCalendarModalOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!calendarModalOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setCalendarModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [calendarModalOpen]);
 
   // Automatisch zum Ende des Chats scrollen wenn neue Nachricht kommt
   useEffect(() => {
@@ -594,6 +638,17 @@ export function EmployeeDashboard() {
     }
     return s;
   }, [myShifts]);
+
+  /** Tage mit mindestens einer Einstempelung (lokales Datum), aus Paar-Sessions. */
+  const workedShiftDateSet = useMemo(() => {
+    const s = new Set();
+    if (!workedTime?.sessions?.length) return s;
+    for (const sess of workedTime.sessions) {
+      const iso = localIsoDateFromInstant(sess.checkin);
+      if (iso) s.add(iso);
+    }
+    return s;
+  }, [workedTime]);
 
   const leaveDayMap = useMemo(() => {
     const m = new Map();
@@ -1046,7 +1101,17 @@ export function EmployeeDashboard() {
 
                 <aside className="ed-overview__aside">
                   <div className="ed-card ed-overview__cal-card">
-                    <p className="ed-card-title ed-overview__cal-heading">Kalender</p>
+                    <div className="ed-overview__cal-head">
+                      <p className="ed-card-title ed-overview__cal-heading">Kalender</p>
+                      <button
+                        type="button"
+                        className="ed-btn ed-btn--ghost ed-btn--sm ed-cal-expand"
+                        onClick={() => setCalendarModalOpen(true)}
+                        disabled={leaveListLoading && myLeaveRequests.length === 0}
+                      >
+                        Größer
+                      </button>
+                    </div>
                     {leaveListLoading && myLeaveRequests.length === 0 ? (
                       <p className="ed-hint">Kalenderdaten werden geladen…</p>
                     ) : (
@@ -1055,9 +1120,10 @@ export function EmployeeDashboard() {
                         monthIndex={calMonthIndex}
                         onPrev={calPrev}
                         onNext={calNext}
-                        shiftDates={shiftDateSet}
+                        plannedShiftDates={shiftDateSet}
+                        workedShiftDates={workedShiftDateSet}
                         leaveDayMap={leaveDayMap}
-                        todayIso={new Date().toISOString().slice(0, 10)}
+                        todayIso={localIsoToday()}
                       />
                     )}
                     {shiftsError && (
@@ -1665,6 +1731,47 @@ export function EmployeeDashboard() {
 
         </div>
       </div>
+
+      {calendarModalOpen && (
+        <div
+          className="ed-cal-modal"
+          role="presentation"
+          onClick={() => setCalendarModalOpen(false)}
+        >
+          <div
+            className="ed-cal-modal__panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ed-cal-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ed-cal-modal__toolbar">
+              <h2 id="ed-cal-modal-title" className="ed-cal-modal__title">
+                Kalender
+              </h2>
+              <button
+                type="button"
+                className="ed-btn ed-btn--ghost ed-btn--sm"
+                onClick={() => setCalendarModalOpen(false)}
+              >
+                Schließen
+              </button>
+            </div>
+            <EmployeeMonthCalendar
+              year={calYear}
+              monthIndex={calMonthIndex}
+              onPrev={calPrev}
+              onNext={calNext}
+              plannedShiftDates={shiftDateSet}
+              workedShiftDates={workedShiftDateSet}
+              leaveDayMap={leaveDayMap}
+              todayIso={localIsoToday()}
+              size="large"
+            />
+          </div>
+          <p className="ed-cal-modal__hint">Klick auf den dunklen Bereich oder Esc schließt die Ansicht.</p>
+        </div>
+      )}
     </div>
   );
 }
