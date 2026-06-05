@@ -147,6 +147,10 @@ app.add_middleware(
 
         "https://ai-powered-workforce-management-pla.vercel.app",
         "https://ai-powered-workforce-management-platform-5jne5x0ax.vercel.app",
+	
+        # aktuelles Deployment
+        "https://ai-powered-workforce-management-platform-33xn9jbdk.vercel.app",
+        "https://ai-powered-workforce-management-git-3ac484-khalil-zeit-management.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
