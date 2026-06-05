@@ -139,12 +139,14 @@ def database_operational_error_handler(request, exc: OperationalError):
         },
     )
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+
+        "https://ai-powered-workforce-management-pla.vercel.app",
+        "https://ai-powered-workforce-management-platform-5jne5x0ax.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
