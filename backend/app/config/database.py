@@ -142,3 +142,4 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     """Create tables for all models that inherit from Base (import models first)."""
     Base.metadata.create_all(bind=engine)
+#cmcjkküc
