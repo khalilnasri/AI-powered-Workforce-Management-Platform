@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import traceback
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -908,167 +912,228 @@ def reports_v2_excel(
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
-    except ImportError:
+    except ImportError as exc:
+        logger.error("openpyxl not available: %s", exc)
         raise HTTPException(status_code=500, detail="openpyxl nicht installiert.")
 
-    report, emp_email_map = _build_v2_data(db, employee_ids, location_ids, from_date, to_date, grouping)
+    try:
+        report, emp_email_map = _build_v2_data(
+            db, employee_ids, location_ids, from_date, to_date, grouping
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("_build_v2_data failed:\n%s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Datenabruf fehlgeschlagen: {exc}")
 
-    _HDR_FILL    = PatternFill("solid", fgColor="1E3A5F")
-    _HDR_FONT    = Font(bold=True, color="FFFFFF", size=10)
-    _GREEN_FILL  = PatternFill("solid", fgColor="D1FAE5")
-    _RED_FILL    = PatternFill("solid", fgColor="FEE2E2")
-    _ORANGE_FILL = PatternFill("solid", fgColor="FEF3C7")
-    _BLUE_FILL   = PatternFill("solid", fgColor="DBEAFE")
-    _GRAY_FILL   = PatternFill("solid", fgColor="F8FAFC")
-    _BOLD        = Font(bold=True)
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _to_berlin(dt: datetime | None) -> datetime | None:
+        """Konvertiert eine datetime (naive oder aware) nach Europe/Berlin."""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(_BERLIN)
 
-    _STATUS_FILL = {
-        "approved":  _GREEN_FILL,
-        "corrected": _BLUE_FILL,
-        "rejected":  _RED_FILL,
-        "pending":   _ORANGE_FILL,
-    }
-    _STATUS_DE = {
-        "approved":  "Genehmigt",
-        "corrected": "Korrigiert",
-        "rejected":  "Abgelehnt",
-        "pending":   "Ausstehend",
-    }
+    def _fmt_dur(minutes: float | int | None) -> str:
+        """Formatiert Minuten als H:MM (auch negativ)."""
+        if minutes is None:
+            return "—"
+        minutes = int(round(minutes))
+        sign = "-" if minutes < 0 else ""
+        h, m = divmod(abs(minutes), 60)
+        return f"{sign}{h}:{m:02d}"
 
-    def _hdr(ws_sheet, cols: list[str]) -> None:
+    def _hdr(ws_sheet, cols: list[str], hdr_fill, hdr_font) -> None:
         for ci, c in enumerate(cols, 1):
             cell = ws_sheet.cell(row=1, column=ci, value=c)
-            cell.font      = _HDR_FONT
-            cell.fill      = _HDR_FILL
+            cell.font      = hdr_font
+            cell.fill      = hdr_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
     def _autofit(ws_sheet) -> None:
-        for col in ws_sheet.columns:
-            w = max((len(str(cell.value or "")) for cell in col), default=0)
-            ws_sheet.column_dimensions[get_column_letter(col[0].column)].width = min(w + 4, 50)
+        try:
+            for col in ws_sheet.columns:
+                if not col:
+                    continue
+                w = max((len(str(cell.value or "")) for cell in col), default=0)
+                ws_sheet.column_dimensions[
+                    get_column_letter(col[0].column)
+                ].width = min(w + 4, 50)
+        except Exception:
+            pass  # Autofit ist optional – nie daran scheitern
 
-    def _fmt_dur(minutes: int) -> str:
-        h, m = divmod(abs(minutes), 60)
-        return f"{'-' if minutes < 0 else ''}{h}:{m:02d}"
+    try:
+        # ── Styles ───────────────────────────────────────────────────────────
+        HDR_FILL    = PatternFill("solid", fgColor="FF1E3A5F")
+        HDR_FONT    = Font(bold=True, color="FFFFFFFF", size=10)
+        GREEN_FILL  = PatternFill("solid", fgColor="FFD1FAE5")
+        RED_FILL    = PatternFill("solid", fgColor="FFFEE2E2")
+        ORANGE_FILL = PatternFill("solid", fgColor="FFFEF3C7")
+        BLUE_FILL   = PatternFill("solid", fgColor="FFDBEAFE")
+        GRAY_FILL   = PatternFill("solid", fgColor="FFF8FAFC")
+        BOLD        = Font(bold=True)
 
-    wb = Workbook()
+        STATUS_FILL = {
+            "approved":  GREEN_FILL,
+            "corrected": BLUE_FILL,
+            "rejected":  RED_FILL,
+            "pending":   ORANGE_FILL,
+        }
+        STATUS_DE = {
+            "approved":  "Genehmigt",
+            "corrected": "Korrigiert",
+            "rejected":  "Abgelehnt",
+            "pending":   "Ausstehend",
+        }
 
-    # ── Sheet 1: Zusammenfassung ──────────────────────────────────────────────
-    ws1 = wb.active
-    ws1.title = "Zusammenfassung"
-    ps = report.period_summary
-    k  = report.kpis
-    rows1 = [
-        ("Zeitraum",                   f"{from_date} – {to_date}"),
-        ("Mitarbeiter",                len(report.employee_summary) if report.employee_summary else "Alle"),
-        ("", ""),
-        ("KPI",                        "Wert"),
-        ("Gesamtstunden (h)",          _fmt_dur(int(k.total_hours * 60))),
-        ("Offizielle Stunden (h)",     _fmt_dur(int(ps.official_hours * 60))),
-        ("Ausstehende Stunden (h)",    _fmt_dur(int(ps.pending_hours * 60))),
-        ("Soll-Stunden (h)",           str(ps.target_hours)),
-        ("Differenz (h)",              _fmt_dur(int(ps.diff_hours * 60))),
-        ("Schichten gesamt",           str(k.total_shifts)),
-        ("Arbeitstage",                str(k.work_days)),
-        ("Standorte",                  str(k.location_count)),
-    ]
-    for r in rows1:
-        ws1.append(list(r))
-    ws1["A4"].font = _BOLD
-    ws1["B4"].font = _BOLD
-    ws1.freeze_panes = "A2"
-    _autofit(ws1)
+        ps          = report.period_summary
+        k           = report.kpis
+        multi_emp   = len(report.employee_summary) > 1
+        wb          = Workbook()
 
-    # ── Sheet 2: Arbeitszeiten ────────────────────────────────────────────────
-    ws2 = wb.create_sheet("Arbeitszeiten")
-    multi_emp = len(report.employee_summary) > 1
-    cols2 = (["Mitarbeiter", "E-Mail"] if multi_emp else []) + [
-        "Datum", "Wochentag", "Standort", "Check-In", "Check-Out", "Pause", "Arbeitszeit", "Status"
-    ]
-    _hdr(ws2, cols2)
-    ws2.freeze_panes = "A2"
-    ws2.auto_filter.ref = f"A1:{get_column_letter(len(cols2))}1"
+        # ── Sheet 1: Zusammenfassung ──────────────────────────────────────────
+        ws1        = wb.active
+        ws1.title  = "Zusammenfassung"
+        emp_label  = str(len(report.employee_summary)) if report.employee_summary else "Alle"
+        rows1 = [
+            ("Zeitraum",                f"{from_date} – {to_date}"),
+            ("Mitarbeiter",             emp_label),
+            ("", ""),
+            ("KPI",                     "Wert"),
+            ("Gesamtstunden (h)",       _fmt_dur(k.total_hours * 60)),
+            ("Offizielle Stunden (h)",  _fmt_dur(ps.official_hours * 60)),
+            ("Ausstehende Stunden (h)", _fmt_dur(ps.pending_hours * 60)),
+            ("Soll-Stunden (h)",        str(ps.target_hours)),
+            ("Differenz (h)",           _fmt_dur(ps.diff_hours * 60)),
+            ("Schichten gesamt",        str(k.total_shifts)),
+            ("Arbeitstage",             str(k.work_days)),
+            ("Standorte",               str(k.location_count)),
+        ]
+        for r in rows1:
+            ws1.append(list(r))
+        ws1["A4"].font = BOLD
+        ws1["B4"].font = BOLD
+        ws1.freeze_panes = "A2"
+        _autofit(ws1)
 
-    for row in report.sessions:
-        ci_b = row.checkin_time.astimezone(_BERLIN)
-        co_b = row.checkout_time.astimezone(_BERLIN) if row.checkout_time else None
-        vals = (
-            ([row.employee_name, emp_email_map.get(row.employee_id, "")] if multi_emp else [])
-            + [
-                ci_b.strftime("%d.%m.%Y"),
-                row.weekday,
-                row.location_name,
-                ci_b.strftime("%H:%M"),
-                co_b.strftime("%H:%M") if co_b else "—",
-                "—",
-                _fmt_dur(row.work_minutes),
-                _STATUS_DE.get(row.status, row.status),
-            ]
+        # ── Sheet 2: Arbeitszeiten ────────────────────────────────────────────
+        ws2        = wb.create_sheet("Arbeitszeiten")
+        cols2      = (["Mitarbeiter", "E-Mail"] if multi_emp else []) + [
+            "Datum", "Wochentag", "Standort", "Check-In", "Check-Out",
+            "Pause", "Arbeitszeit", "Status",
+        ]
+        _hdr(ws2, cols2, HDR_FILL, HDR_FONT)
+        ws2.freeze_panes = "A2"
+        ws2.auto_filter.ref = f"A1:{get_column_letter(len(cols2))}1"
+
+        for row in report.sessions:
+            ci_b = _to_berlin(row.checkin_time)
+            co_b = _to_berlin(row.checkout_time)
+            if ci_b is None:
+                continue  # degenerate session – skip
+            vals = (
+                ([row.employee_name, emp_email_map.get(row.employee_id, "")] if multi_emp else [])
+                + [
+                    ci_b.strftime("%d.%m.%Y"),
+                    row.weekday,
+                    row.location_name,
+                    ci_b.strftime("%H:%M"),
+                    co_b.strftime("%H:%M") if co_b else "—",
+                    "—",
+                    _fmt_dur(row.work_minutes),
+                    STATUS_DE.get(row.status, row.status),
+                ]
+            )
+            ri = ws2.max_row + 1
+            ws2.append(vals)
+            fill = STATUS_FILL.get(row.status, GRAY_FILL)
+            for ci in range(1, len(cols2) + 1):
+                ws2.cell(row=ri, column=ci).fill = fill
+        _autofit(ws2)
+
+        # ── Sheet 3: Standortauswertung ───────────────────────────────────────
+        ws3   = wb.create_sheet("Standortauswertung")
+        cols3 = ["Standort", "Anzahl Schichten", "Stunden"]
+        _hdr(ws3, cols3, HDR_FILL, HDR_FONT)
+        ws3.freeze_panes = "A2"
+        ws3.auto_filter.ref = f"A1:{get_column_letter(len(cols3))}1"
+
+        for loc in report.location_summary:
+            ws3.append([
+                loc.location_name,
+                loc.shift_count,
+                _fmt_dur(loc.total_hours * 60),
+            ])
+        sum_row3 = ws3.max_row + 1
+        total_shifts3 = sum(l.shift_count for l in report.location_summary)
+        ws3.append(["GESAMT", total_shifts3, _fmt_dur(k.total_hours * 60)])
+        for ci in range(1, 4):
+            ws3.cell(row=sum_row3, column=ci).font = BOLD
+        _autofit(ws3)
+
+        # ── Sheet 4: Mitarbeiteruebersicht ────────────────────────────────────
+        ws4   = wb.create_sheet("Mitarbeiteruebersicht")
+        cols4 = [
+            "Mitarbeiter", "E-Mail", "Offizielle Stunden", "Ausstehend",
+            "Schichten", "Arbeitstage", "Soll (h)", "Differenz (h)",
+        ]
+        _hdr(ws4, cols4, HDR_FILL, HDR_FONT)
+        ws4.freeze_panes = "A2"
+        ws4.auto_filter.ref = f"A1:{get_column_letter(len(cols4))}1"
+
+        for emp_row in report.employee_summary:
+            diff = emp_row.diff_hours or 0.0
+            ri   = ws4.max_row + 1
+            ws4.append([
+                emp_row.employee_name,
+                emp_email_map.get(emp_row.employee_id, ""),
+                _fmt_dur(emp_row.official_hours * 60),
+                _fmt_dur(emp_row.pending_hours * 60),
+                emp_row.shift_count,
+                emp_row.work_days,
+                str(emp_row.target_hours),
+                _fmt_dur(diff * 60),
+            ])
+            fill = GREEN_FILL if diff >= 0 else RED_FILL
+            for ci in [3, 8]:
+                ws4.cell(row=ri, column=ci).fill = fill
+        _autofit(ws4)
+
+        # ── Streamen ──────────────────────────────────────────────────────────
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        data = buf.read()
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Excel-Export V2 fehlgeschlagen (from=%s to=%s emps=%s locs=%s):\n%s",
+            from_date, to_date, employee_ids, location_ids,
+            traceback.format_exc(),
         )
-        ri = ws2.max_row + 1
-        ws2.append(vals)
-        fill = _STATUS_FILL.get(row.status, _GRAY_FILL)
-        for ci in range(1, len(cols2) + 1):
-            ws2.cell(row=ri, column=ci).fill = fill
-    _autofit(ws2)
-
-    # ── Sheet 3: Standortauswertung ───────────────────────────────────────────
-    ws3 = wb.create_sheet("Standortauswertung")
-    cols3 = ["Standort", "Anzahl Schichten", "Stunden"]
-    _hdr(ws3, cols3)
-    ws3.freeze_panes = "A2"
-    ws3.auto_filter.ref = f"A1:{get_column_letter(len(cols3))}1"
-
-    for loc in report.location_summary:
-        ws3.append([loc.location_name, loc.shift_count, _fmt_dur(int(loc.total_hours * 60))])
-    sum_row = ws3.max_row + 1
-    ws3.append(["GESAMT", sum(l.shift_count for l in report.location_summary), _fmt_dur(int(k.total_hours * 60))])
-    for ci in range(1, 4):
-        ws3.cell(row=sum_row, column=ci).font = _BOLD
-    _autofit(ws3)
-
-    # ── Sheet 4: Mitarbeiterübersicht ─────────────────────────────────────────
-    ws4 = wb.create_sheet("Mitarbeiterübersicht")
-    cols4 = ["Mitarbeiter", "E-Mail", "Offizielle Stunden", "Ausstehend", "Schichten", "Arbeitstage", "Soll (h)", "Differenz (h)"]
-    _hdr(ws4, cols4)
-    ws4.freeze_panes = "A2"
-    ws4.auto_filter.ref = f"A1:{get_column_letter(len(cols4))}1"
-
-    for emp_row in report.employee_summary:
-        diff = emp_row.diff_hours
-        ri   = ws4.max_row + 1
-        ws4.append([
-            emp_row.employee_name,
-            emp_email_map.get(emp_row.employee_id, ""),
-            _fmt_dur(int(emp_row.official_hours * 60)),
-            _fmt_dur(int(emp_row.pending_hours * 60)),
-            emp_row.shift_count,
-            emp_row.work_days,
-            str(emp_row.target_hours),
-            _fmt_dur(int(diff * 60)),
-        ])
-        fill = _GREEN_FILL if diff >= 0 else _RED_FILL
-        for ci in [3, 8]:
-            ws4.cell(row=ri, column=ci).fill = fill
-    _autofit(ws4)
-
-    # ── Streamen ──────────────────────────────────────────────────────────────
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Excel-Export fehlgeschlagen: {type(exc).__name__}: {exc}",
+        )
 
     # Dateiname
     emp_ids_set = {e.employee_id for e in report.employee_summary}
     if len(employee_ids) == 1 and employee_ids[0] in emp_ids_set:
-        raw  = next((e.employee_name for e in report.employee_summary if e.employee_id == employee_ids[0]), "Mitarbeiter")
-        safe = "".join(c if c.isalnum() else "_" for c in raw)
+        raw   = next(
+            (e.employee_name for e in report.employee_summary if e.employee_id == employee_ids[0]),
+            "Mitarbeiter",
+        )
+        safe  = "".join(c if c.isalnum() else "_" for c in raw)
         fname = f"Arbeitszeitbericht_{safe}_{from_date}_{to_date}.xlsx"
     else:
         label = "Alle_Mitarbeiter" if not employee_ids else "Mehrere_Mitarbeiter"
         fname = f"Arbeitszeitbericht_{label}_{from_date}_{to_date}.xlsx"
 
     return StreamingResponse(
-        iter([buf.read()]),
+        iter([data]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
