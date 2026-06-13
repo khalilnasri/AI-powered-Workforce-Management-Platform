@@ -149,3 +149,103 @@ class AttendanceReportResponse(BaseModel):
     # Offizielle Gesamtstunden (approved + corrected)
     approved_total_seconds: int = 0
     approved_total_hours: float = 0.0
+
+
+# ── Report Summary (Charts) ───────────────────────────────────────────────────
+
+class LocationHoursItem(BaseModel):
+    location_name: str
+    official_hours: float
+
+
+class MonthlyHoursItem(BaseModel):
+    month: str  # "YYYY-MM"
+    official_hours: float
+
+
+class EmployeeSollIstItem(BaseModel):
+    employee_name: str
+    target_hours: float
+    official_hours: float
+
+
+class StatusDistributionItem(BaseModel):
+    approved: int = 0
+    corrected: int = 0
+    pending: int = 0
+    rejected: int = 0
+
+
+class ReportSummaryResponse(BaseModel):
+    hours_by_location: list[LocationHoursItem]
+    hours_by_month: list[MonthlyHoursItem]
+    soll_vs_ist: list[EmployeeSollIstItem]
+    status_distribution: StatusDistributionItem
+
+
+# ── Report V2 Schemas ─────────────────────────────────────────────────────────
+
+class ReportV2KPIs(BaseModel):
+    total_hours: float
+    official_hours: float
+    pending_hours: float
+    total_shifts: int
+    location_count: int
+    work_days: int
+
+
+class ReportV2SessionRow(BaseModel):
+    employee_id: int
+    employee_name: str
+    date: str
+    weekday: str
+    location_name: str
+    checkin_time: datetime
+    checkout_time: datetime | None
+    break_minutes: int
+    work_minutes: int
+    duration_minutes: int
+    status: str
+
+
+class ReportV2LocationRow(BaseModel):
+    location_name: str
+    shift_count: int
+    total_hours: float
+
+
+class ReportV2TrendRow(BaseModel):
+    period: str
+    period_label: str
+    official_hours: float
+    pending_hours: float
+
+
+class ReportV2EmployeeRow(BaseModel):
+    employee_id: int
+    employee_name: str
+    official_hours: float
+    pending_hours: float
+    target_hours: int
+    diff_hours: float
+    shift_count: int
+    work_days: int
+
+
+class ReportV2PeriodSummary(BaseModel):
+    total_hours: float
+    official_hours: float
+    pending_hours: float
+    target_hours: int
+    diff_hours: float
+    shift_count: int
+    work_days: int
+
+
+class ReportV2Response(BaseModel):
+    kpis: ReportV2KPIs
+    sessions: list[ReportV2SessionRow]
+    location_summary: list[ReportV2LocationRow]
+    period_summary: ReportV2PeriodSummary
+    trend_data: list[ReportV2TrendRow]
+    employee_summary: list[ReportV2EmployeeRow]
