@@ -1,6 +1,10 @@
-import L from "leaflet";
+﻿import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import axios from "axios";
+import {
+  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { Link, useNavigate } from "react-router-dom";
@@ -21,8 +25,16 @@ const LOCATIONS_URL  = "/admin/locations";
 const ATTENDANCE_URL = "/admin/attendance";
 const STATISTICS_URL = "/admin/statistics";
 const SHIFTS_URL     = "/planning/shifts";
-const REPORTS_URL    = "/admin/reports/attendance";
+const REPORTS_URL         = "/admin/reports/attendance";
+const REPORTS_SUMMARY_URL = "/admin/reports/summary";
+const REPORTS_EXCEL_URL   = "/admin/reports/excel";
+const REPORTS_V2_URL      = "/admin/reports/v2/summary";
+const REPORTS_V2_EXCEL_URL= "/admin/reports/v2/excel";
 const DEFAULT_CENTER = [52.4006, 9.6656];
+
+// ── Report V2 constants ─────────────────────────────────────────────────────
+const RC_PIE_COLORS = ["#2563eb","#16a34a","#f59e0b","#dc2626","#7c3aed","#0891b2","#db2777"];
+const V2_PAGE_SIZE  = 20;
 
 // ── SVG Icons ───────────────────────────────────────────────────────────────
 const Ico = {
@@ -443,8 +455,53 @@ function SectionTitle({ title, action }) {
 }
 
 // ── Card wrapper ─────────────────────────────────────────────────────────────
-function Card({ children, className = "", id }) {
-  return <div id={id} className={`ad-card ${className}`}>{children}</div>;
+function Card({ children, className = "", id, style }) {
+  return <div id={id} style={style} className={`ad-card ${className}`}>{children}</div>;
+}
+
+// ── MultiSelect ───────────────────────────────────────────────────────────────
+function MultiSelect({ options, value, onChange, placeholder = "Auswählen" }) {
+  const [open, setOpen] = React.useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function outside(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", outside);
+    return () => document.removeEventListener("mousedown", outside);
+  }, []);
+
+  const toggle = (id) => {
+    onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id]);
+  };
+  const allSelected = value.length === 0;
+  const label = allSelected
+    ? `Alle (${options.length})`
+    : value.length === 1
+      ? (options.find(o => o.value === value[0])?.label ?? "1 ausgewählt")
+      : `${value.length} ausgewählt`;
+
+  return (
+    <div className="ad-multiselect" ref={ref}>
+      <button type="button" className="ad-multiselect__trigger" onClick={() => setOpen(o => !o)}>
+        <span className="ad-multiselect__label">{label}</span>
+        <span className="ad-multiselect__arrow">▼</span>
+      </button>
+      {open && (
+        <div className="ad-multiselect__dropdown">
+          <div className="ad-multiselect__option ad-multiselect__all" onClick={() => { onChange([]); setOpen(false); }}>
+            <input type="checkbox" readOnly checked={allSelected} /> Alle {placeholder}
+          </div>
+          <div className="ad-multiselect__divider" />
+          {options.map(opt => (
+            <div key={opt.value} className="ad-multiselect__option" onClick={() => toggle(opt.value)}>
+              <input type="checkbox" readOnly checked={value.includes(opt.value)} />
+              {opt.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Badge ─────────────────────────────────────────────────────────────────────
@@ -641,6 +698,33 @@ export function AdminDashboard() {
   const [reportQuickFilter, setReportQuickFilter] = useState("custom");
   const [reportDateError,   setReportDateError]   = useState(null);
 
+  // ── Chart-Filter ──────────────────────────────────────────────────────────
+  const _now = new Date();
+  const [chartMonth,      setChartMonth]      = useState(String(_now.getMonth() + 1));
+  const [chartYear,       setChartYear]       = useState(String(_now.getFullYear()));
+  const [chartLocationId, setChartLocationId] = useState("");
+  const [chartEmpId,      setChartEmpId]      = useState("");
+  const [chartData,       setChartData]       = useState(null);
+  const [chartLoading,    setChartLoading]    = useState(false);
+  const [chartError,      setChartError]      = useState(null);
+
+  // ── Report V2 ────────────────────────────────────────────────────────────
+  const _nowV2    = new Date();
+  const _isoMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  const _isoEnd   = (d) => {
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  };
+  const [v2EmpIds,   setV2EmpIds]   = useState([]);
+  const [v2LocIds,   setV2LocIds]   = useState([]);
+  const [v2FromDate, setV2FromDate] = useState(_isoMonth(_nowV2));
+  const [v2ToDate,   setV2ToDate]   = useState(_isoEnd(_nowV2));
+  const [v2Grouping, setV2Grouping] = useState("daily");
+  const [v2Report,   setV2Report]   = useState(null);
+  const [v2Loading,  setV2Loading]  = useState(false);
+  const [v2Error,    setV2Error]    = useState(null);
+  const [v2Page,     setV2Page]     = useState(1);
+
   // ── Badge counts ─────────────────────────────────────────────────────────
   const [pendingCount,   setPendingCount]   = useState(0);
   const [correctedCount, setCorrectedCount] = useState(0);
@@ -822,6 +906,14 @@ export function AdminDashboard() {
   }, []);
 
   useEffect(() => { refreshAll(); }, [refreshAll]);
+
+  useEffect(() => {
+    // Report V2: reset page when switching to reports tab
+    if (activeSection === "reports") {
+      setV2Page(1);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection]);
 
   const fetchApprovals = useCallback(async () => {
     if (approvalFilterStatus === "overdue") { setApprovals([]); return; }
@@ -1267,6 +1359,105 @@ export function AdminDashboard() {
       const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
       URL.revokeObjectURL(url);
     } catch { alert("CSV-Export fehlgeschlagen."); }
+  }
+
+  const fetchChartData = useCallback(async (month, year, locId, empId) => {
+    setChartLoading(true);
+    setChartError(null);
+    try {
+      const p = new URLSearchParams();
+      if (month)  p.append("month",       month);
+      if (year)   p.append("year",        year);
+      if (locId)  p.append("location_id", locId);
+      if (empId)  p.append("employee_id", empId);
+      const res = await apiClient.get(`${REPORTS_SUMMARY_URL}?${p}`);
+      setChartData(res.data);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setChartError(typeof d === "string" ? d : "Chart-Daten konnten nicht geladen werden.");
+    } finally {
+      setChartLoading(false);
+    }
+  }, []);
+
+  async function handleDownloadExcel() {
+    try {
+      const p = new URLSearchParams();
+      if (chartMonth)      p.append("month",       chartMonth);
+      if (chartYear)       p.append("year",        chartYear);
+      if (chartLocationId) p.append("location_id", chartLocationId);
+      if (chartEmpId)      p.append("employee_id", chartEmpId);
+      const res = await apiClient.get(`${REPORTS_EXCEL_URL}?${p}`, { responseType: "blob" });
+      const disposition = res.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "report.xlsx";
+      const url = URL.createObjectURL(
+        new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
+      );
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Excel-Export fehlgeschlagen."); }
+  }
+
+  // ── Report V2 helpers ─────────────────────────────────────────────────────
+  function fmtHours(h) {
+    if (h == null) return "—";
+    const sign    = h < 0 ? "-" : "";
+    const abs     = Math.abs(h);
+    const hrs     = Math.floor(abs);
+    const mins    = Math.round((abs - hrs) * 60);
+    return `${sign}${hrs}:${String(mins).padStart(2, "0")} h`;
+  }
+  function fmtMinutes(m) {
+    if (m == null) return "—";
+    const sign = m < 0 ? "-" : "";
+    const abs  = Math.abs(m);
+    const h    = Math.floor(abs / 60);
+    const min  = abs % 60;
+    return `${sign}${h}:${String(min).padStart(2, "0")} h`;
+  }
+  function fmtTimeBerlin(isoStr) {
+    if (!isoStr) return "—";
+    return new Date(isoStr).toLocaleTimeString("de-DE", {
+      hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
+    });
+  }
+
+  const fetchV2Report = useCallback(async () => {
+    if (!v2FromDate || !v2ToDate) return;
+    setV2Loading(true);
+    setV2Error(null);
+    setV2Page(1);
+    try {
+      const p = new URLSearchParams({ from_date: v2FromDate, to_date: v2ToDate, grouping: v2Grouping });
+      v2EmpIds.forEach(id => p.append("employee_ids", id));
+      v2LocIds.forEach(id => p.append("location_ids", id));
+      const res = await apiClient.get(`${REPORTS_V2_URL}?${p}`);
+      setV2Report(res.data);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setV2Error(typeof d === "string" ? d : "Bericht konnte nicht geladen werden.");
+    } finally {
+      setV2Loading(false);
+    }
+  }, [v2FromDate, v2ToDate, v2Grouping, v2EmpIds, v2LocIds]);
+
+  async function handleDownloadV2Excel() {
+    if (!v2FromDate || !v2ToDate) return;
+    try {
+      const p = new URLSearchParams({ from_date: v2FromDate, to_date: v2ToDate, grouping: v2Grouping });
+      v2EmpIds.forEach(id => p.append("employee_ids", id));
+      v2LocIds.forEach(id => p.append("location_ids", id));
+      const res = await apiClient.get(`${REPORTS_V2_EXCEL_URL}?${p}`, { responseType: "blob" });
+      const disp = res.headers["content-disposition"] || "";
+      const match = disp.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "Arbeitszeitbericht.xlsx";
+      const url = URL.createObjectURL(
+        new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
+      );
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Excel-Export fehlgeschlagen."); }
   }
 
   // ── Shift handlers ────────────────────────────────────────────────────────
@@ -2321,187 +2512,310 @@ export function AdminDashboard() {
           {/* ═══════════ REPORTS ══════════════════════════════════════════ */}
           {activeSection === "reports" && (
             <div className="ad-section">
-              <SectionTitle title="Report Center" />
+              <SectionTitle title="Report Center" action={
+                <button className="ad-btn ad-btn--excel" onClick={handleDownloadV2Excel} disabled={v2Loading || !v2Report}>
+                  <span className="ad-btn__icon">{Ico.download}</span> Excel exportieren
+                </button>
+              } />
 
-              {/* Quick filters */}
-              <div className="ad-report-quick">
-                {[
-                  { key: "today",     label: "Heute" },
-                  { key: "week",      label: "Diese Woche" },
-                  { key: "month",     label: "Dieser Monat" },
-                  { key: "lastMonth", label: "Letzter Monat" },
-                  { key: "custom",    label: "Benutzerdefiniert" },
-                ].map(({ key, label }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`ad-report-quick__btn${reportQuickFilter === key ? " ad-report-quick__btn--active" : ""}`}
-                    onClick={() => handleReportQuickFilter(key)}
-                    disabled={reportBusy}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {/* KPI cards */}
-              <div className="ad-report-kpi-grid">
-                <div className="ad-report-kpi ad-report-kpi--blue">
-                  <span className="ad-report-kpi__icon">{Ico.clock}</span>
-                  <div>
-                    <div className="ad-report-kpi__value">{reportData ? `${reportData.total_hours}h` : "—"}</div>
-                    <div className="ad-report-kpi__label">Gesamtstunden</div>
+              {/* ── Filter Bar ── */}
+              <Card className="ad-rc-filters-card">
+                <div className="ad-rc-filters-grid">
+                  <div className="ad-rc-filter">
+                    <label className="ad-rc-filter__label">Mitarbeiter</label>
+                    <MultiSelect
+                      options={employees.filter(e => e.is_active).map(e => ({ value: e.id, label: e.name }))}
+                      value={v2EmpIds}
+                      onChange={setV2EmpIds}
+                      placeholder="Mitarbeiter"
+                    />
                   </div>
-                </div>
-                <div className="ad-report-kpi ad-report-kpi--green">
-                  <span className="ad-report-kpi__icon">{Ico.check}</span>
-                  <div>
-                    <div className="ad-report-kpi__value">{reportData ? `${reportData.approved_total_hours}h` : "—"}</div>
-                    <div className="ad-report-kpi__label">Genehmigte Stunden</div>
+                  <div className="ad-rc-filter">
+                    <label className="ad-rc-filter__label">Standort</label>
+                    <MultiSelect
+                      options={locations.map(l => ({ value: l.id, label: l.name }))}
+                      value={v2LocIds}
+                      onChange={setV2LocIds}
+                      placeholder="Standorte"
+                    />
                   </div>
-                </div>
-                <div className="ad-report-kpi ad-report-kpi--orange">
-                  <span className="ad-report-kpi__icon">{Ico.bell}</span>
-                  <div>
-                    <div className="ad-report-kpi__value">
-                      {reportData
-                        ? reportData.employees.flatMap((e) => e.sessions).filter((s) => s.work_session_status === "pending").length
-                        : "—"}
-                    </div>
-                    <div className="ad-report-kpi__label">Ausstehende Sitzungen</div>
+                  <div className="ad-rc-filter">
+                    <label className="ad-rc-filter__label">Von</label>
+                    <input className="ad-input" type="date" value={v2FromDate} onChange={e => setV2FromDate(e.target.value)} />
                   </div>
-                </div>
-                <div className="ad-report-kpi ad-report-kpi--purple">
-                  <span className="ad-report-kpi__icon">{Ico.users}</span>
-                  <div>
-                    <div className="ad-report-kpi__value">{reportData ? reportData.employees.length : "—"}</div>
-                    <div className="ad-report-kpi__label">Mitarbeiter mit Einträgen</div>
+                  <div className="ad-rc-filter">
+                    <label className="ad-rc-filter__label">Bis</label>
+                    <input className="ad-input" type="date" value={v2ToDate} onChange={e => setV2ToDate(e.target.value)} />
                   </div>
-                </div>
-              </div>
-
-              {/* Filter form */}
-              <Card>
-                <form className="ad-report-form" onSubmit={handleLoadReport}>
-                  <div className="ad-field">
-                    <label>Mitarbeiter</label>
-                    <select className="ad-input ad-select" value={reportEmpId} onChange={(e) => setReportEmpId(e.target.value)} disabled={reportBusy}>
-                      <option value="">— Alle Mitarbeiter —</option>
-                      {employees.map((e) => <option key={e.id} value={String(e.id)}>{e.name} ({e.email})</option>)}
+                  <div className="ad-rc-filter">
+                    <label className="ad-rc-filter__label">Gruppierung</label>
+                    <select className="ad-input ad-select" value={v2Grouping} onChange={e => setV2Grouping(e.target.value)}>
+                      <option value="daily">Täglich</option>
+                      <option value="weekly">Wöchentlich</option>
+                      <option value="monthly">Monatlich</option>
                     </select>
                   </div>
-                  <div className="ad-field">
-                    <label>Von</label>
-                    <input
-                      className={`ad-input${reportDateError ? " ad-input--error" : ""}`}
-                      type="date"
-                      value={reportStart}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setReportStart(val);
-                        setReportQuickFilter("custom");
-                        if (reportEnd && val > reportEnd) {
-                          setReportEnd("");
-                          setReportDateError(null);
-                        } else {
-                          setReportDateError(null);
-                        }
-                      }}
-                      disabled={reportBusy}
-                    />
-                  </div>
-                  <div className="ad-field">
-                    <label>Bis</label>
-                    <input
-                      className={`ad-input${reportDateError ? " ad-input--error" : ""}`}
-                      type="date"
-                      value={reportEnd}
-                      min={reportStart || undefined}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setReportEnd(val);
-                        setReportQuickFilter("custom");
-                        if (reportStart && val < reportStart) {
-                          setReportDateError("Das Enddatum darf nicht vor dem Startdatum liegen.");
-                        } else {
-                          setReportDateError(null);
-                        }
-                      }}
-                      disabled={reportBusy}
-                    />
-                  </div>
-                  <div className="ad-field ad-field--actions">
-                    <button type="submit" className="ad-btn ad-btn--primary" disabled={reportBusy || !!reportDateError}>
-                      {reportBusy ? "Lädt…" : "Anzeigen"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ad-btn ad-btn--ghost"
-                      onClick={handleDownloadCsv}
-                      disabled={reportBusy || !!reportDateError || !reportData}
-                      title={!reportData ? "Zuerst Bericht laden" : "CSV herunterladen"}
-                    >
-                      <span className="ad-btn__icon">{Ico.download}</span> CSV
-                    </button>
-                  </div>
-                </form>
-                {reportDateError && (
-                  <p className="ad-report-date-error">{reportDateError}</p>
-                )}
+                </div>
+                <div className="ad-rc-filters-actions">
+                  <button className="ad-btn ad-btn--primary" onClick={fetchV2Report} disabled={v2Loading || !v2FromDate || !v2ToDate}>
+                    {v2Loading ? "Lädt…" : "Bericht anzeigen"}
+                  </button>
+                  <button className="ad-btn ad-btn--excel" onClick={handleDownloadV2Excel} disabled={v2Loading || !v2Report}>
+                    <span className="ad-btn__icon">{Ico.download}</span> Excel-Export (.xlsx)
+                  </button>
+                </div>
               </Card>
 
-              {reportError && <p className="ad-alert" style={{marginTop:"1rem"}}>{reportError}</p>}
+              {v2Error && <p className="ad-alert" style={{ marginBottom: "1rem" }}>{v2Error}</p>}
+              {v2Loading && <div className="ad-rc-spinner">Bericht wird geladen…</div>}
 
-              {reportData && (
-                <Card style={{marginTop:"1.25rem"}}>
-                  <div className="ad-table-wrap ad-table-wrap--scroll">
-                    <table className="ad-table">
-                      <thead>
-                        <tr>
-                          <th>Mitarbeiter</th>
-                          <th>E-Mail</th>
-                          <th>Check-in</th>
-                          <th>Check-out</th>
-                          <th>Dauer</th>
-                          <th>Schicht-Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {reportData.employees.every((e) => e.sessions.length === 0) ? (
-                          <tr><td colSpan={6} className="ad-empty">Keine Berichtsdaten für diesen Zeitraum gefunden.</td></tr>
-                        ) : (
-                          reportData.employees.flatMap((emp) =>
-                            emp.sessions.map((s, i) => (
-                              <tr key={`${emp.employee_id}-${i}`}>
+              {v2Report && !v2Loading && (
+                <>
+                  {/* ── KPI Cards ── */}
+                  <div className="ad-rc-kpis">
+                    <div className="ad-rc-kpi">
+                      <div className="ad-rc-kpi__icon">{Ico.clock}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{fmtHours(v2Report.kpis.total_hours)}</div>
+                        <div className="ad-rc-kpi__label">Gesamtstunden</div>
+                      </div>
+                    </div>
+                    <div className="ad-rc-kpi ad-rc-kpi--green">
+                      <div className="ad-rc-kpi__icon ad-rc-kpi__icon--green">{Ico.check}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{fmtHours(v2Report.kpis.official_hours)}</div>
+                        <div className="ad-rc-kpi__label">Offizielle Stunden</div>
+                      </div>
+                    </div>
+                    <div className="ad-rc-kpi ad-rc-kpi--orange">
+                      <div className="ad-rc-kpi__icon ad-rc-kpi__icon--orange">{Ico.bell}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{fmtHours(v2Report.kpis.pending_hours)}</div>
+                        <div className="ad-rc-kpi__label">Ausstehend</div>
+                      </div>
+                    </div>
+                    <div className="ad-rc-kpi ad-rc-kpi--indigo">
+                      <div className="ad-rc-kpi__icon ad-rc-kpi__icon--indigo">{Ico.chart}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{v2Report.kpis.total_shifts}</div>
+                        <div className="ad-rc-kpi__label">Schichten</div>
+                      </div>
+                    </div>
+                    <div className="ad-rc-kpi ad-rc-kpi--purple">
+                      <div className="ad-rc-kpi__icon ad-rc-kpi__icon--purple">{Ico.map}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{v2Report.kpis.location_count}</div>
+                        <div className="ad-rc-kpi__label">Standorte</div>
+                      </div>
+                    </div>
+                    <div className="ad-rc-kpi ad-rc-kpi--teal">
+                      <div className="ad-rc-kpi__icon ad-rc-kpi__icon--teal">{Ico.calendar}</div>
+                      <div className="ad-rc-kpi__body">
+                        <div className="ad-rc-kpi__value">{v2Report.kpis.work_days}</div>
+                        <div className="ad-rc-kpi__label">Arbeitstage</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Charts ── */}
+                  {(v2Report.location_summary.length > 0 || v2Report.trend_data.length > 0) && (
+                    <div className="ad-rc-charts">
+                      {v2Report.location_summary.length > 0 && (
+                        <div className="ad-rc-chart-card">
+                          <div className="ad-rc-chart-card__title">Stunden pro Standort</div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <BarChart data={v2Report.location_summary} margin={{ top: 4, right: 12, left: 0, bottom: 44 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e6ebf2" />
+                              <XAxis dataKey="location_name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} />
+                              <YAxis tick={{ fontSize: 11 }} unit="h" />
+                              <Tooltip formatter={(v) => [`${v}h`, "Stunden"]} />
+                              <Bar dataKey="total_hours" fill="#2563eb" radius={[4,4,0,0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                      {v2Report.trend_data.length > 0 && (
+                        <div className="ad-rc-chart-card">
+                          <div className="ad-rc-chart-card__title">Stundenentwicklung</div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={v2Report.trend_data} margin={{ top: 4, right: 12, left: 0, bottom: 44 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e6ebf2" />
+                              <XAxis dataKey="period_label" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} />
+                              <YAxis tick={{ fontSize: 11 }} unit="h" />
+                              <Tooltip formatter={(v, n) => [`${v}h`, n === "official_hours" ? "Offiziell" : "Ausstehend"]} />
+                              <Legend formatter={(v) => v === "official_hours" ? "Offizielle Stunden" : "Ausstehend"} />
+                              <Line type="monotone" dataKey="official_hours" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                              <Line type="monotone" dataKey="pending_hours" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="5 3" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                      {v2Report.location_summary.length > 0 && (
+                        <div className="ad-rc-chart-card">
+                          <div className="ad-rc-chart-card__title">Verteilung nach Standort</div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <PieChart>
+                              <Pie
+                                data={v2Report.location_summary.map((l) => ({ name: l.location_name, value: l.total_hours }))}
+                                cx="50%" cy="45%" innerRadius={45} outerRadius={75} paddingAngle={3} dataKey="value"
+                              >
+                                {v2Report.location_summary.map((_, i) => (
+                                  <Cell key={i} fill={RC_PIE_COLORS[i % RC_PIE_COLORS.length]} />
+                                ))}
+                              </Pie>
+                              <Tooltip formatter={(v) => [`${v}h`]} />
+                              <Legend />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── Detailbericht ── */}
+                  <Card style={{ marginTop: "1.5rem" }}>
+                    <div className="ad-rc-section-header">
+                      <h3 className="ad-rc-section-title">Detailbericht</h3>
+                      <span className="ad-rc-section-badge">{v2Report.sessions.length} Schichten</span>
+                    </div>
+                    <div className="ad-table-wrap ad-table-wrap--scroll">
+                      <table className="ad-table">
+                        <thead>
+                          <tr>
+                            {v2Report.employee_summary.length > 1 && <th>Mitarbeiter</th>}
+                            <th>Datum</th><th>Wochentag</th><th>Standort</th>
+                            <th>Check-In</th><th>Check-Out</th><th>Pause</th>
+                            <th>Arbeitszeit</th><th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {v2Report.sessions.length === 0 ? (
+                            <tr><td colSpan={9} className="ad-empty">Keine Schichten im gewählten Zeitraum.</td></tr>
+                          ) : (
+                            v2Report.sessions
+                              .slice((v2Page - 1) * V2_PAGE_SIZE, v2Page * V2_PAGE_SIZE)
+                              .map((row, i) => (
+                                <tr key={i}>
+                                  {v2Report.employee_summary.length > 1 && <td><strong>{row.employee_name}</strong></td>}
+                                  <td className="ad-mono">{row.date.split("-").reverse().join(".")}</td>
+                                  <td className="ad-muted">{row.weekday}</td>
+                                  <td>{row.location_name}</td>
+                                  <td className="ad-mono">{fmtTimeBerlin(row.checkin_time)}</td>
+                                  <td className="ad-mono">{row.checkout_time ? fmtTimeBerlin(row.checkout_time) : "—"}</td>
+                                  <td className="ad-muted">—</td>
+                                  <td><strong>{fmtMinutes(row.work_minutes)}</strong></td>
+                                  <td>
+                                    <span className={`ad-badge ad-badge--${{ approved:"green", corrected:"blue", rejected:"red", pending:"yellow" }[row.status] ?? "gray"}`}>
+                                      {{ approved:"Genehmigt", corrected:"Korrigiert", rejected:"Abgelehnt", pending:"Ausstehend" }[row.status] ?? row.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {Math.ceil(v2Report.sessions.length / V2_PAGE_SIZE) > 1 && (
+                      <div className="ad-rc-pagination">
+                        <button className="ad-rc-pg-btn" onClick={() => setV2Page(p => Math.max(1, p - 1))} disabled={v2Page === 1}>‹ Zurück</button>
+                        <span className="ad-rc-pg-info">
+                          Seite {v2Page} / {Math.ceil(v2Report.sessions.length / V2_PAGE_SIZE)} · {v2Report.sessions.length} Einträge
+                        </span>
+                        <button className="ad-rc-pg-btn" onClick={() => setV2Page(p => Math.min(Math.ceil(v2Report.sessions.length / V2_PAGE_SIZE), p + 1))} disabled={v2Page === Math.ceil(v2Report.sessions.length / V2_PAGE_SIZE)}>Weiter ›</button>
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* ── Standortauswertung ── */}
+                  {v2Report.location_summary.length > 0 && (
+                    <Card style={{ marginTop: "1.25rem" }}>
+                      <div className="ad-rc-section-header">
+                        <h3 className="ad-rc-section-title">Standortauswertung</h3>
+                      </div>
+                      <div className="ad-table-wrap">
+                        <table className="ad-table">
+                          <thead><tr><th>Standort</th><th>Schichten</th><th>Stunden</th></tr></thead>
+                          <tbody>
+                            {v2Report.location_summary.map((loc, i) => (
+                              <tr key={i}>
+                                <td><strong>{loc.location_name}</strong></td>
+                                <td>{loc.shift_count}</td>
+                                <td><strong>{fmtHours(loc.total_hours)}</strong></td>
+                              </tr>
+                            ))}
+                            <tr className="ad-table-sum">
+                              <td><strong>Gesamt</strong></td>
+                              <td><strong>{v2Report.location_summary.reduce((s, l) => s + l.shift_count, 0)}</strong></td>
+                              <td><strong>{fmtHours(v2Report.kpis.total_hours)}</strong></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  )}
+
+                  {/* ── Mitarbeiterübersicht (nur bei mehreren) ── */}
+                  {v2Report.employee_summary.length > 1 && (
+                    <Card style={{ marginTop: "1.25rem" }}>
+                      <div className="ad-rc-section-header">
+                        <h3 className="ad-rc-section-title">Mitarbeiterübersicht</h3>
+                        <span className="ad-rc-section-badge">{v2Report.employee_summary.length} Mitarbeiter</span>
+                      </div>
+                      <div className="ad-table-wrap ad-table-wrap--scroll">
+                        <table className="ad-table">
+                          <thead>
+                            <tr>
+                              <th>Mitarbeiter</th><th>Offizielle Stunden</th><th>Ausstehend</th>
+                              <th>Schichten</th><th>Arbeitstage</th><th>Soll (h)</th><th>Differenz</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {v2Report.employee_summary.map((emp, i) => (
+                              <tr key={i}>
                                 <td><strong>{emp.employee_name}</strong></td>
-                                <td className="ad-muted">{emp.employee_email}</td>
-                                <td className="ad-mono">{formatTime(s.checkin)}</td>
-                                <td className="ad-mono">{s.checkout ? formatTime(s.checkout) : "—"}</td>
-                                <td>
-                                  <strong>{s.duration_hours}h</strong>{" "}
-                                  <small className="ad-muted">({formatSeconds(s.duration_seconds)})</small>
-                                </td>
-                                <td>
-                                  <span className={`ad-report-status ad-report-status--${s.work_session_status ?? s.status}`}>
-                                    {{
-                                      pending:   "Ausstehend",
-                                      approved:  "Genehmigt",
-                                      rejected:  "Abgelehnt",
-                                      corrected: "Korrigiert",
-                                      open:      "Offen",
-                                      closed:    "Geschlossen",
-                                    }[s.work_session_status ?? s.status] ?? (s.work_session_status ?? s.status)}
-                                  </span>
+                                <td><strong>{fmtHours(emp.official_hours)}</strong></td>
+                                <td className="ad-muted">{fmtHours(emp.pending_hours)}</td>
+                                <td>{emp.shift_count}</td>
+                                <td>{emp.work_days}</td>
+                                <td>{emp.target_hours}h</td>
+                                <td className={emp.diff_hours >= 0 ? "ad-txt-green" : "ad-txt-red"}>
+                                  <strong>{emp.diff_hours >= 0 ? "+" : ""}{fmtHours(emp.diff_hours)}</strong>
                                 </td>
                               </tr>
-                            ))
-                          )
-                        )}
-                      </tbody>
-                    </table>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  )}
+
+                  {/* ── Perioden-Zusammenfassung ── */}
+                  <div className="ad-rc-period-summary">
+                    <h3 className="ad-rc-period-summary__title">Perioden-Zusammenfassung</h3>
+                    <div className="ad-rc-period-summary__grid">
+                      {[
+                        { label: "Gesamtstunden",      value: fmtHours(v2Report.period_summary.total_hours),    cls: "" },
+                        { label: "Offizielle Stunden", value: fmtHours(v2Report.period_summary.official_hours), cls: "ad-txt-green" },
+                        { label: "Ausstehend",          value: fmtHours(v2Report.period_summary.pending_hours),  cls: "ad-txt-orange" },
+                        { label: "Soll-Stunden",        value: `${v2Report.period_summary.target_hours}h`,        cls: "" },
+                        {
+                          label: "Differenz",
+                          value: `${v2Report.period_summary.diff_hours >= 0 ? "+" : ""}${fmtHours(v2Report.period_summary.diff_hours)}`,
+                          cls: v2Report.period_summary.diff_hours >= 0 ? "ad-txt-green" : "ad-txt-red",
+                        },
+                        { label: "Schichten",   value: String(v2Report.period_summary.shift_count), cls: "" },
+                        { label: "Arbeitstage", value: String(v2Report.period_summary.work_days),   cls: "" },
+                      ].map(({ label, value, cls }) => (
+                        <div key={label} className="ad-rc-period-summary__item">
+                          <span className="ad-rc-period-summary__label">{label}</span>
+                          <span className={`ad-rc-period-summary__value ${cls}`}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </Card>
+                </>
               )}
+
             </div>
           )}
 
