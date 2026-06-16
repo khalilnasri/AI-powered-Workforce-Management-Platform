@@ -1,17 +1,16 @@
 import axios from "axios";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { API_BASE, apiClient, getToken, setToken } from "../apiClient";
+import { apiClient, getToken, setToken } from "../apiClient";
 import { dashboardPathForRole } from "../authPaths";
 import "./Login.css";
-
-const LOGIN_URL = `${API_BASE}/auth/login`;
 
 export function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState(null);
   const [busy, setBusy] = useState(false);
+
   const navigate = useNavigate();
   const location = useLocation();
   const justRegistered = Boolean(location.state?.registered);
@@ -19,7 +18,9 @@ export function Login() {
   useEffect(() => {
     const token = getToken();
     if (!token) return;
+
     let cancelled = false;
+
     apiClient
       .get("/auth/me")
       .then((res) => {
@@ -30,6 +31,7 @@ export function Login() {
       .catch(() => {
         if (!cancelled) navigate("/login", { replace: true });
       });
+
     return () => {
       cancelled = true;
     };
@@ -37,6 +39,7 @@ export function Login() {
 
   useEffect(() => {
     document.title = "Anmelden · Time Stemple";
+
     return () => {
       document.title = "Time Stemple";
     };
@@ -44,34 +47,39 @@ export function Login() {
 
   async function handleSubmit(event) {
     event.preventDefault();
+
     setLoginError(null);
     setBusy(true);
 
     try {
-      const { data } = await axios.post(LOGIN_URL, { email: email.trim(), password });
+      const { data } = await apiClient.post("/auth/login", {
+        email: email.trim(),
+        password,
+      });
+
       if (data?.access_token) {
         setToken(data.access_token);
         navigate(dashboardPathForRole(data.role));
+      } else {
+        setLoginError("Login erfolgreich, aber kein Token erhalten.");
       }
     } catch (err) {
       if (axios.isAxiosError(err)) {
         const detail = err.response?.data?.detail;
+
         if (typeof detail === "string") {
           setLoginError(detail);
         } else if (Array.isArray(detail)) {
           setLoginError(detail.map((d) => d.msg || JSON.stringify(d)).join(" "));
         } else if (err.response?.status === 503) {
           setLoginError(
-            "Backend läuft, aber die Datenbank antwortet nicht. Prüfen Sie .env (POSTGRES_PASSWORD) und http://127.0.0.1:8000/health/db",
+            "Backend läuft, aber die Datenbank antwortet nicht. Bitte Datenbank-Konfiguration prüfen."
           );
         } else if (err.response) {
           setLoginError(`Anmeldung fehlgeschlagen (HTTP ${err.response.status}).`);
         } else {
           setLoginError(
-            "Keine Verbindung zum API-Server. " +
-              "1) Im Ordner „time-stemple-app“ (wo die package.json liegt) ausführen: npm run dev:all. " +
-              "2) Test: http://127.0.0.1:8000/health muss JSON anzeigen. " +
-              "3) Wenn die Datenbank blockiert: in .env USE_SQLITE=1 setzen und neu starten.",
+            "Keine Verbindung zum API-Server. Bitte prüfen, ob https://api.work-track.de/health erreichbar ist."
           );
         }
       } else {
@@ -86,7 +94,9 @@ export function Login() {
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit} noValidate>
         <p className="login-brand">Time Stemple</p>
+
         <h1 className="login-title">Anmelden</h1>
+
         <p className="login-hint">
           Melden Sie sich mit Ihrer E-Mail und Ihrem Passwort an.
         </p>
@@ -94,6 +104,7 @@ export function Login() {
         <label className="login-label" htmlFor="email">
           E-Mail
         </label>
+
         <input
           id="email"
           name="email"
@@ -109,6 +120,7 @@ export function Login() {
         <label className="login-label" htmlFor="password">
           Passwort
         </label>
+
         <input
           id="password"
           name="password"
