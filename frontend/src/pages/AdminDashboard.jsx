@@ -28,8 +28,10 @@ const SHIFTS_URL     = "/planning/shifts";
 const REPORTS_URL         = "/admin/reports/attendance";
 const REPORTS_SUMMARY_URL = "/admin/reports/summary";
 const REPORTS_EXCEL_URL   = "/admin/reports/excel";
-const REPORTS_V2_URL      = "/admin/reports/v2/summary";
-const REPORTS_V2_EXCEL_URL= "/admin/reports/v2/excel";
+const REPORTS_V2_URL        = "/admin/reports/v2/summary";
+const REPORTS_V2_EXCEL_URL  = "/admin/reports/v2/excel";
+const NOTIF_SETTINGS_URL    = "/admin/notifications/settings";
+const NOTIF_CHECK_URL       = "/admin/notifications/check";
 const DEFAULT_CENTER = [52.4006, 9.6656];
 
 // ── Report V2 constants ─────────────────────────────────────────────────────
@@ -767,6 +769,18 @@ export function AdminDashboard() {
   const [ignoredOverdueIds, setIgnoredOverdueIds] = useState(new Set());
   const [approvalDateError, setApprovalDateError] = useState(null);
 
+  // ── Notification Settings ─────────────────────────────────────────────────
+  const [notifEnabled,     setNotifEnabled]     = useState(false);
+  const [notifHours,       setNotifHours]       = useState(12);
+  const [notifEmail,       setNotifEmail]       = useState("");
+  const [notifSaving,      setNotifSaving]      = useState(false);
+  const [notifSaveOk,      setNotifSaveOk]      = useState(false);
+  const [notifSaveErr,     setNotifSaveErr]     = useState(null);
+  const [notifChecking,    setNotifChecking]    = useState(false);
+  const [notifCheckResult, setNotifCheckResult] = useState(null);
+  const [notifCheckErr,    setNotifCheckErr]    = useState(null);
+  const [notifSmtpReady,   setNotifSmtpReady]   = useState(null);
+
   // ── Attendance-Filter ────────────────────────────────────────────────────
   const [attendanceSearch,      setAttendanceSearch]      = useState("");
   const [attendanceTypeFilter,  setAttendanceTypeFilter]  = useState("all");
@@ -908,7 +922,6 @@ export function AdminDashboard() {
   useEffect(() => { refreshAll(); }, [refreshAll]);
 
   useEffect(() => {
-    // Report V2: reset page when switching to reports tab
     if (activeSection === "reports") {
       setV2Page(1);
     }
@@ -954,6 +967,15 @@ export function AdminDashboard() {
       fetchOverdueCheckouts();
     }
   }, [activeSection, fetchApprovals, fetchOverdueCheckouts]);
+
+  useEffect(() => {
+    if (activeSection !== "settings") return;
+    apiClient.get(NOTIF_SETTINGS_URL).then((res) => {
+      setNotifEnabled(res.data.enabled ?? false);
+      setNotifHours(res.data.hours ?? 12);
+      setNotifEmail(res.data.email ?? "");
+    }).catch(() => {});
+  }, [activeSection]);
 
   const fetchLeaveAdmin = useCallback(async () => {
     setLeaveAdminLoading(true);
@@ -3502,14 +3524,186 @@ export function AdminDashboard() {
           {activeSection === "settings" && (
             <div className="ad-section">
               <SectionTitle title="Einstellungen" />
-              <Card>
-                <div className="ad-settings-placeholder">
-                  {Ico.gear}
-                  <p style={{ fontWeight: 600, fontSize: "1rem", color: "#334155", margin: 0 }}>
-                    Einstellungen
-                  </p>
-                  <p>Konfigurationsoptionen werden in einer zukünftigen Version verfügbar sein.</p>
+
+              {/* ── Eincheck-Benachrichtigung ── */}
+              <Card style={{ marginBottom: "1.5rem" }}>
+                <div className="ad-card-header">
+                  <h3>Eincheck-Warnung (E-Mail)</h3>
                 </div>
+                <p style={{ color: "var(--text-3)", fontSize: "0.875rem", marginBottom: "1.25rem" }}>
+                  Wenn ein Mitarbeiter länger als die angegebene Stundenzahl eingecheckt ist
+                  ohne auszuchecken, kann eine E-Mail an den Admin gesendet werden.
+                </p>
+
+                {/* Toggle */}
+                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem" }}>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={notifEnabled}
+                    onClick={() => { setNotifEnabled((v) => !v); setNotifSaveOk(false); setNotifSaveErr(null); }}
+                    style={{
+                      width: 44, height: 24, borderRadius: 12, border: "none", cursor: "pointer",
+                      background: notifEnabled ? "#2563eb" : "#cbd5e1", position: "relative", transition: "background 0.2s",
+                    }}
+                  >
+                    <span style={{
+                      position: "absolute", top: 3, left: notifEnabled ? 23 : 3,
+                      width: 18, height: 18, borderRadius: "50%", background: "#fff",
+                      transition: "left 0.2s", display: "block",
+                    }} />
+                  </button>
+                  <span style={{ fontWeight: 600, color: notifEnabled ? "#2563eb" : "#64748b" }}>
+                    {notifEnabled ? "Aktiviert" : "Deaktiviert"}
+                  </span>
+                </div>
+
+                {/* Hours + Email */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: "1rem", marginBottom: "1rem" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "var(--text-2)", marginBottom: "0.35rem" }}>
+                      Schwellenwert (Stunden)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={48}
+                      value={notifHours}
+                      onChange={(e) => { setNotifHours(Number(e.target.value)); setNotifSaveOk(false); }}
+                      className="ad-input"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "var(--text-2)", marginBottom: "0.35rem" }}>
+                      Admin-E-Mail (Empfänger)
+                    </label>
+                    <input
+                      type="email"
+                      value={notifEmail}
+                      onChange={(e) => { setNotifEmail(e.target.value); setNotifSaveOk(false); }}
+                      placeholder="admin@firma.de"
+                      className="ad-input"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                </div>
+
+                {/* Save button */}
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn--primary"
+                    disabled={notifSaving}
+                    onClick={async () => {
+                      setNotifSaving(true); setNotifSaveOk(false); setNotifSaveErr(null);
+                      try {
+                        await apiClient.put(NOTIF_SETTINGS_URL, {
+                          enabled: notifEnabled,
+                          hours: notifHours,
+                          email: notifEmail,
+                        });
+                        setNotifSaveOk(true);
+                      } catch (err) {
+                        const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+                        setNotifSaveErr(typeof d === "string" ? d : "Speichern fehlgeschlagen.");
+                      } finally {
+                        setNotifSaving(false);
+                      }
+                    }}
+                  >
+                    {notifSaving ? "Speichert…" : "Einstellungen speichern"}
+                  </button>
+                  {notifSaveOk  && <span style={{ color: "#16a34a", fontWeight: 600 }}>✓ Gespeichert</span>}
+                  {notifSaveErr && <span style={{ color: "#dc2626", fontSize: "0.85rem" }}>{notifSaveErr}</span>}
+                </div>
+
+                {/* Divider */}
+                <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "1.25rem 0" }} />
+
+                {/* Manual check */}
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn--ghost"
+                    disabled={notifChecking}
+                    onClick={async () => {
+                      setNotifChecking(true); setNotifCheckResult(null); setNotifCheckErr(null);
+                      try {
+                        const res = await apiClient.post(NOTIF_CHECK_URL);
+                        setNotifCheckResult(res.data);
+                        setNotifSmtpReady(res.data.smtp_ready ?? null);
+                      } catch (err) {
+                        const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+                        setNotifCheckErr(typeof d === "string" ? d : "Prüfung fehlgeschlagen.");
+                      } finally {
+                        setNotifChecking(false);
+                      }
+                    }}
+                  >
+                    {notifChecking ? "Prüft…" : "Jetzt manuell prüfen & E-Mail senden"}
+                  </button>
+                  {notifCheckErr && <span style={{ color: "#dc2626", fontSize: "0.85rem" }}>{notifCheckErr}</span>}
+                </div>
+
+                {/* Check result */}
+                {notifCheckResult && (
+                  <div style={{ background: "var(--bg-2)", borderRadius: 8, padding: "1rem" }}>
+                    <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-3)" }}>
+                        Gefunden: <strong style={{ color: "#1e293b" }}>{notifCheckResult.alerts?.length ?? 0}</strong>
+                      </span>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-3)" }}>
+                        E-Mail gesendet:{" "}
+                        <strong style={{ color: notifCheckResult.email_sent ? "#16a34a" : "#64748b" }}>
+                          {notifCheckResult.email_sent ? `Ja → ${notifCheckResult.email_to}` : "Nein"}
+                        </strong>
+                      </span>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-3)" }}>
+                        SMTP:{" "}
+                        <strong style={{ color: notifCheckResult.smtp_ready ? "#16a34a" : "#dc2626" }}>
+                          {notifCheckResult.smtp_ready ? "konfiguriert" : "nicht konfiguriert"}
+                        </strong>
+                      </span>
+                    </div>
+
+                    {notifCheckResult.alerts?.length > 0 ? (
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+                        <thead>
+                          <tr style={{ background: "#1e3a5f", color: "#fff" }}>
+                            <th style={{ padding: "8px 10px", textAlign: "left" }}>Mitarbeiter</th>
+                            <th style={{ padding: "8px 10px", textAlign: "left" }}>Eingecheckt seit</th>
+                            <th style={{ padding: "8px 10px", textAlign: "left" }}>Dauer</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {notifCheckResult.alerts.map((a, i) => (
+                            <tr key={a.employee_id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #e2e8f0" }}>{a.employee_name}</td>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #e2e8f0" }}>
+                                {new Date(a.checkin_time).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" })}
+                              </td>
+                              <td style={{ padding: "7px 10px", borderBottom: "1px solid #e2e8f0", color: "#c0392b", fontWeight: 700 }}>
+                                {a.hours_elapsed} Std.
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p style={{ color: "#16a34a", fontWeight: 600, margin: 0 }}>
+                        ✓ Kein Mitarbeiter überschreitet den Schwellenwert.
+                      </p>
+                    )}
+
+                    {!notifCheckResult.smtp_ready && (
+                      <p style={{ marginTop: "0.75rem", fontSize: "0.8rem", color: "#64748b", background: "#fef9c3", borderRadius: 6, padding: "0.5rem 0.75rem" }}>
+                        Hinweis: SMTP ist nicht konfiguriert — E-Mail-Versand ist deaktiviert.
+                        Setze <code>SMTP_HOST</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> in der <code>.env</code>-Datei.
+                      </p>
+                    )}
+                  </div>
+                )}
               </Card>
             </div>
           )}

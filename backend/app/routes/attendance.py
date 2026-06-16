@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,8 @@ from app.config.database import get_db
 from app.geofence import geofence_block_response
 from app.models.attendance import Attendance
 from app.models.employee import Employee
+from app.models.employee_work_location import EmployeeWorkLocation
+from app.models.location import WorkplaceLocation
 from app.models.work_session import WorkSession
 from app.schemas.attendance import (
     AttendanceLogEntry,
@@ -27,6 +30,7 @@ from app.schemas.attendance import (
 from app.schemas.approvals import WorkSessionResponse
 from app.services.employment_hours import resolved_month_target_hours
 from app.services.work_session_stats import get_employee_month_ws_stats, get_employee_session_stats
+from app.utils.distance import haversine_meters
 from app.worked_time import compute_worked_time_payload
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,47 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def _check_location_assignment(
+    db: Session,
+    lat: float,
+    lng: float,
+    employee: Employee,
+) -> JSONResponse | None:
+    """
+    Wenn dem Mitarbeiter Standorte zugewiesen sind, prüft ob GPS zu einem
+    dieser Standorte passt. Gibt None zurück wenn erlaubt, sonst 403-Response.
+    Ohne Zuweisung wird keine Einschränkung geprüft (Fallback auf Geofence).
+    """
+    assigned_ids: list[int] = [
+        r.location_id
+        for r in db.scalars(
+            select(EmployeeWorkLocation)
+            .where(EmployeeWorkLocation.employee_id == employee.id)
+        ).all()
+    ]
+    if not assigned_ids and employee.assigned_location_id:
+        assigned_ids = [employee.assigned_location_id]
+
+    if not assigned_ids:
+        return None  # Keine Zuweisung → kein Zusatz-Check
+
+    assigned_locs = db.scalars(
+        select(WorkplaceLocation).where(WorkplaceLocation.id.in_(assigned_ids))
+    ).all()
+
+    for loc in assigned_locs:
+        if haversine_meters(lat, lng, loc.lat, loc.lng) <= float(loc.radius_meters):
+            return None  # GPS liegt in einem zugewiesenen Standort → OK
+
+    return JSONResponse(
+        status_code=403,
+        content={
+            "status": "error",
+            "message": "Du bist nicht für diesen Standort freigegeben.",
+        },
+    )
 
 
 @router.get("/status", response_model=AttendanceStatusResponse)
@@ -136,6 +181,10 @@ def check_in(
     blocked = geofence_block_response(db, body.lat, body.lng, current_employee)
     if blocked is not None:
         return blocked
+
+    assignment_blocked = _check_location_assignment(db, body.lat, body.lng, current_employee)
+    if assignment_blocked is not None:
+        return assignment_blocked
 
     denied_checkin = validate_checkin_allowed(db, current_employee.id)
     if denied_checkin is not None:

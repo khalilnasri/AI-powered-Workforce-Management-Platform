@@ -17,6 +17,7 @@ from app.routes import leave_admin as leave_admin_routes
 from app.routes import planning as planning_routes
 from app.routes import reports as reports_routes
 from app.routes import ai as ai_routes
+from app.routes import notifications as notifications_routes
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import app.models  # noqa: F401 — register models on Base before creating tables
+    import app.models.app_setting  # noqa: F401
 
     try:
         init_db()
@@ -79,6 +81,28 @@ def _migrate_db() -> None:
             conn.execute(text("ALTER TABLE employees ADD COLUMN target_hours_month INTEGER"))
 
     insp2 = inspect(engine)
+    if not insp2.has_table("app_settings"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE app_settings (
+                        key        VARCHAR(100) PRIMARY KEY,
+                        value      VARCHAR(1000),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                    if IS_SQLITE
+                    else """
+                    CREATE TABLE app_settings (
+                        key        VARCHAR(100) PRIMARY KEY,
+                        value      VARCHAR(1000),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+
     if (
         insp2.has_table("employees")
         and insp2.has_table("locations")
@@ -166,6 +190,7 @@ app.include_router(attendance_routes.router)
 app.include_router(employee_routes.router)
 app.include_router(planning_routes.router)
 app.include_router(ai_routes.router)
+app.include_router(notifications_routes.router)
 
 
 @app.get("/")
