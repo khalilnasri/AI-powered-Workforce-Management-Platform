@@ -1,0 +1,190 @@
+{
+  "name": "Time Stemple – Eincheck-Warnung",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "ts-node-001",
+      "name": "Stündlich prüfen",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:8000/admin/notifications/long-checkins",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "hours",
+              "value": "12"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ts-node-002",
+      "name": "API – Lange Einchecks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "Time Stemple Admin Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "alerts",
+        "include": "allFields",
+        "options": {}
+      },
+      "id": "ts-node-003",
+      "name": "Alle sammeln",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-001",
+              "leftValue": "={{ $json.alerts.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ts-node-004",
+      "name": "Warnungen vorhanden?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const alerts = $json.alerts;\nconst threshold = 12;\n\nconst rows = alerts.map(a => {\n  const dt = new Date(a.checkin_time).toLocaleString('de-DE', {\n    day: '2-digit', month: '2-digit', year: 'numeric',\n    hour: '2-digit', minute: '2-digit'\n  });\n  return `\n  <tr>\n    <td style=\"padding:8px 12px;border-bottom:1px solid #e2e8f0\">${a.employee_name}</td>\n    <td style=\"padding:8px 12px;border-bottom:1px solid #e2e8f0\">${dt} Uhr</td>\n    <td style=\"padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#c0392b;font-weight:700\">${a.hours_elapsed} Std.</td>\n  </tr>`;\n}).join('');\n\nconst html = `<!DOCTYPE html>\n<html><body style=\"font-family:Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto\">\n<div style=\"background:#1e3a5f;color:white;padding:20px 24px;border-radius:8px 8px 0 0\">\n  <h2 style=\"margin:0\">&#9888;&#65039; Eincheck-Warnung</h2>\n  <p style=\"margin:4px 0 0;opacity:.8\">Automatische Benachrichtigung – Time Stemple</p>\n</div>\n<div style=\"padding:20px 24px;background:#f8fafc\">\n  <p><b>${alerts.length} Mitarbeiter</b> sind seit mehr als <b>${threshold} Stunden</b> eingecheckt ohne auszuchecken.</p>\n  <table style=\"width:100%;border-collapse:collapse;background:white;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)\">\n    <thead>\n      <tr style=\"background:#334155;color:white\">\n        <th style=\"padding:10px 12px;text-align:left\">Mitarbeiter</th>\n        <th style=\"padding:10px 12px;text-align:left\">Eingecheckt seit</th>\n        <th style=\"padding:10px 12px;text-align:left\">Dauer</th>\n      </tr>\n    </thead>\n    <tbody>${rows}</tbody>\n  </table>\n</div>\n<div style=\"padding:12px 24px;background:#f1f5f9;border-radius:0 0 8px 8px\">\n  <p style=\"margin:0;font-size:12px;color:#64748b\">Diese E-Mail wurde automatisch von n8n gesendet. Bitte nicht antworten.</p>\n</div>\n</body></html>`;\n\nreturn [{ json: { html, subject: `Eincheck-Warnung: ${alerts.length} Mitarbeiter seit >${threshold}h eingecheckt`, count: alerts.length } }];"
+      },
+      "id": "ts-node-005",
+      "name": "E-Mail HTML aufbauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 180]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@timestemple.de",
+        "toEmail": "admin@firma.de",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "ts-node-006",
+      "name": "E-Mail senden",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1340, 180],
+      "credentials": {
+        "smtp": {
+          "id": "2",
+          "name": "SMTP Credentials"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Stündlich prüfen": {
+      "main": [
+        [
+          {
+            "node": "API – Lange Einchecks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API – Lange Einchecks": {
+      "main": [
+        [
+          {
+            "node": "Alle sammeln",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alle sammeln": {
+      "main": [
+        [
+          {
+            "node": "Warnungen vorhanden?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Warnungen vorhanden?": {
+      "main": [
+        [
+          {
+            "node": "E-Mail HTML aufbauen",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "E-Mail HTML aufbauen": {
+      "main": [
+        [
+          {
+            "node": "E-Mail senden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "versionId": "time-stemple-checkin-alert-v1"
+}
