@@ -168,11 +168,12 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://app.work-track.de",
 
         "https://ai-powered-workforce-management-pla.vercel.app",
         "https://ai-powered-workforce-management-platform-5jne5x0ax.vercel.app",
 	
-        # aktuelles Deployment
+        
         "https://ai-powered-workforce-management-platform-33xn9jbdk.vercel.app",
         "https://ai-powered-workforce-management-git-3ac484-khalil-zeit-management.vercel.app",
     ],
