@@ -8,9 +8,9 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 
 
-def create_access_token(*, subject: str) -> str:
+def create_access_token(*, subject: str, role: str) -> str:
     expire = datetime.now(UTC) + timedelta(minutes=JWT_EXPIRE_MINUTES)
-    payload = {"sub": subject, "exp": expire}
+    payload = {"sub": subject, "role": role, "exp": expire}
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 

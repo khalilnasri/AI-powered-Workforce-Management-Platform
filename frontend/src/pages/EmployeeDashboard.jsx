@@ -2,7 +2,18 @@ import axios from "axios";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiClient, clearToken } from "../apiClient";
+import { MobileEmployeeDashboard } from "./MobileEmployeeDashboard";
 import "./EmployeeDashboard.css";
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 640);
+  useEffect(() => {
+    const h = () => setIsMobile(window.innerWidth <= 640);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+  return isMobile;
+}
 
 const ME_URL           = "/auth/me";
 const CHECKIN_URL      = "/attendance/checkin";
@@ -94,12 +105,7 @@ const IcoSessions = () => (
     <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
   </svg>
 );
-const IcoAI = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-    strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-  </svg>
-);
+
 const IcoVacation = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
     strokeLinecap="round" strokeLinejoin="round">
@@ -165,20 +171,25 @@ function localIsoToday() {
   return `${y}-${m}-${day}`;
 }
 
-/** Zeitpunkt des Einstempelns der offenen Besuchssession (für Live-Zähler). */
-function getOpenSessionCheckinIso(workedTime) {
-  if (!workedTime?.active || !Array.isArray(workedTime.sessions)) return null;
-  const open = [...workedTime.sessions].reverse().find((s) => !s.checkout);
-  return open?.checkin ?? null;
-}
-
-function resolveActiveCheckinIso(workedTime, logs, checkedIn) {
-  const fromWorked = getOpenSessionCheckinIso(workedTime);
-  if (fromWorked) return fromWorked;
-  if (checkedIn && logs?.[0] && String(logs[0].type ?? "").toLowerCase() === "checkin") {
-    return logs[0].created_at;
+/** Letzter Check-in nur wenn das neueste Log-Ereignis ein Check-in ist. */
+function getLatestCheckinIsoFromLogs(logs) {
+  if (!Array.isArray(logs) || !logs.length) return null;
+  const latest = logs[0];
+  if (String(latest?.type ?? "").toLowerCase() === "checkin") {
+    return latest.created_at ?? null;
   }
   return null;
+}
+
+/**
+ * Startzeit für die Live-Stoppuhr (nur aktuelle Besuchssession).
+ * Kein workedTime.sessions — dort können alte Sessions die Anzeige verfälschen.
+ */
+function resolveLiveSessionStartIso(checkedIn, liveSessionStartAt, attendanceStatus, logs) {
+  if (!checkedIn) return null;
+  if (liveSessionStartAt) return liveSessionStartAt;
+  if (attendanceStatus?.active_checkin_at) return attendanceStatus.active_checkin_at;
+  return getLatestCheckinIsoFromLogs(logs);
 }
 
 /** { h, m, s } seit checkinIso (lokale Uhr). */
@@ -306,11 +317,16 @@ const NAV_ITEMS = [
   { id: "leave",    label: "Urlaub",          Icon: IcoVacation },
   { id: "sessions", label: "Meine Sessions",  Icon: IcoSessions },
   { id: "logs",     label: "Stempelprotokoll", Icon: IcoLogs     },
-  { id: "ai",       label: "KI-Assistent",    Icon: IcoAI       },
 ];
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Entry point: mobile vs desktop ───────────────────────────────────────────
 export function EmployeeDashboard() {
+  const isMobile = useIsMobile();
+  return isMobile ? <MobileEmployeeDashboard /> : <DesktopEmployeeDashboard />;
+}
+
+// ── Desktop Dashboard ─────────────────────────────────────────────────────────
+function DesktopEmployeeDashboard() {
   const navigate = useNavigate();
 
   // ── Tab state (Standard: Dashboard mit Kalender & Schnellaktionen) ───────
@@ -348,6 +364,10 @@ export function EmployeeDashboard() {
   const [attendanceResponse, setAttendanceResponse] = useState(null);
   const [attendanceError,    setAttendanceError]    = useState(null);
   const [areaStatus,         setAreaStatus]         = useState(null);
+  /** Start der aktuellen Besuchssession — nur per Einstempeln/Ausstempeln ändern, nicht per Refetch. */
+  const [liveSessionStartAt, setLiveSessionStartAt] = useState(null);
+  const liveSessionHydratedRef = useRef(false);
+  const statusFetchSeqRef = useRef(0);
 
   // ── Shifts ────────────────────────────────────────────────────────────────
   const [myShifts,      setMyShifts]      = useState([]);
@@ -373,23 +393,26 @@ export function EmployeeDashboard() {
   const [leaveFormError,      setLeaveFormError]      = useState(null);
   const [leaveFormSuccess,    setLeaveFormSuccess]    = useState(null);
 
-  // ── AI Chat ───────────────────────────────────────────────────────────────
-  // Jede Nachricht: { role: "user"|"assistant", content: string, sources: [] }
-  const [aiMessages, setAiMessages] = useState([]);
-  const [aiInput,    setAiInput]    = useState("");
-  const [aiLoading,  setAiLoading]  = useState(false);
-  const [aiError,    setAiError]    = useState(null);
-  const chatBottomRef = useRef(null);
-
   // ── API fetchers ──────────────────────────────────────────────────────────
   const fetchAttendanceStatus = useCallback(() => {
+    statusFetchSeqRef.current += 1;
+    const seq = statusFetchSeqRef.current;
     setStatusLoading(true);
     setStatusError(null);
     return apiClient
       .get(STATUS_URL)
-      .then((res) => { setAttendanceStatus(res.data); })
-      .catch(() => { setAttendanceStatus(null); setStatusError("Stempelstatus konnte nicht geladen werden."); })
-      .finally(() => { setStatusLoading(false); });
+      .then((res) => {
+        if (seq !== statusFetchSeqRef.current) return;
+        setAttendanceStatus(res.data);
+      })
+      .catch(() => {
+        if (seq !== statusFetchSeqRef.current) return;
+        setAttendanceStatus(null);
+        setStatusError("Stempelstatus konnte nicht geladen werden.");
+      })
+      .finally(() => {
+        if (seq === statusFetchSeqRef.current) setStatusLoading(false);
+      });
   }, []);
 
   const fetchAttendanceLogs = useCallback(() => {
@@ -443,6 +466,19 @@ export function EmployeeDashboard() {
   useEffect(() => { fetchWorkedTime();       }, [fetchWorkedTime]);
   useEffect(() => { fetchLeaveSummary();     }, [fetchLeaveSummary]);
 
+  // Nur beim ersten Status-Laden (Seitenaufruf): laufende Session aus API übernehmen.
+  // Kein Sync bei späteren Refetches — veraltete Antworten würden sonst die Stoppuhr zurücksetzen.
+  useEffect(() => {
+    if (liveSessionHydratedRef.current || !attendanceStatus) return;
+    liveSessionHydratedRef.current = true;
+    if (
+      attendanceStatus.status === "checked_in" &&
+      attendanceStatus.active_checkin_at
+    ) {
+      setLiveSessionStartAt(attendanceStatus.active_checkin_at);
+    }
+  }, [attendanceStatus]);
+
   useEffect(() => {
     setShiftsLoading(true);
     apiClient
@@ -463,17 +499,12 @@ export function EmployeeDashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "sessions") fetchMySessions();
+    if (activeTab === "sessions" || activeTab === "worked") fetchMySessions();
   }, [activeTab, fetchMySessions]);
 
   useEffect(() => {
     if (activeTab === "leave" || activeTab === "overview") fetchMyLeaveRequests();
   }, [activeTab, fetchMyLeaveRequests]);
-
-  // Automatisch zum Ende des Chats scrollen wenn neue Nachricht kommt
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [aiMessages, aiLoading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -486,46 +517,6 @@ export function EmployeeDashboard() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
-
-  // ── AI Chat Handler ───────────────────────────────────────────────────────
-  async function handleAiAsk(e) {
-    e.preventDefault();
-    const question = aiInput.trim();
-    if (!question || aiLoading) return;
-
-    // Nutzernachricht sofort anzeigen
-    setAiMessages((prev) => [...prev, { role: "user", content: question, sources: [] }]);
-    setAiInput("");
-    setAiLoading(true);
-    setAiError(null);
-
-    try {
-      const res = await apiClient.post("/ai/ask", { question });
-      setAiMessages((prev) => [
-        ...prev,
-        {
-          role:    "assistant",
-          content: res.data.answer ?? "Keine Antwort erhalten.",
-          sources: res.data.sources ?? [],
-        },
-      ]);
-    } catch (err) {
-      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      let msg = "Fehler beim Abrufen der Antwort. Bitte versuche es erneut.";
-      if (typeof detail === "string") {
-        msg = detail;
-      } else if (Array.isArray(detail) && detail.length > 0) {
-        // Pydantic validation error: [{msg: "...", loc: [...], ...}]
-        msg = detail[0].msg ?? msg;
-      }
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: msg, sources: [], isError: true },
-      ]);
-    } finally {
-      setAiLoading(false);
-    }
-  }
 
   // ── GPS + POST ────────────────────────────────────────────────────────────
   function runGpsThenPost(url) {
@@ -552,9 +543,87 @@ export function EmployeeDashboard() {
           .then((res) => {
             setAttendanceResponse(res.data);
             setAreaStatus("inside");
+
+            const isCheckin = url === CHECKIN_URL || String(url).endsWith("/checkin");
+            const isCheckout = url === CHECKOUT_URL || String(url).endsWith("/checkout");
+
+            if (isCheckin && res.data?.created_at) {
+              const startedAt = res.data.created_at;
+              statusFetchSeqRef.current += 1;
+              setLiveSessionStartAt(startedAt);
+              setAttendanceStatus((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      status: "checked_in",
+                      last_type: "checkin",
+                      can_checkin: false,
+                      can_checkout: true,
+                      active_checkin_at: startedAt,
+                    }
+                  : {
+                      status: "checked_in",
+                      last_type: "checkin",
+                      can_checkin: false,
+                      can_checkout: true,
+                      active_checkin_at: startedAt,
+                    },
+              );
+              setLogs((prev) => [
+                {
+                  id: res.data?.id ?? Date.now(),
+                  type: "checkin",
+                  lat: res.data?.lat ?? lat,
+                  lng: res.data?.lng ?? lng,
+                  created_at: startedAt,
+                },
+                ...(prev ?? []).filter((e) => String(e?.type ?? "").toLowerCase() !== "checkin" || e.created_at !== startedAt),
+              ]);
+            }
+            if (isCheckout) {
+              statusFetchSeqRef.current += 1;
+              setLiveSessionStartAt(null);
+              setAttendanceStatus((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      status: "checked_out",
+                      last_type: "checkout",
+                      can_checkin: true,
+                      can_checkout: false,
+                      active_checkin_at: null,
+                    }
+                  : prev,
+              );
+              setWorkedTime((prev) => {
+                if (!prev) return prev;
+                const closedAt = res.data?.created_at ?? new Date().toISOString();
+                return {
+                  ...prev,
+                  active: false,
+                  active_checkin_at: null,
+                  sessions: (prev.sessions ?? []).map((s) =>
+                    s.checkout
+                      ? s
+                      : { ...s, checkout: closedAt, duration_seconds: s.duration_seconds ?? 0 },
+                  ),
+                };
+              });
+              setLogs((prev) => {
+                const checkoutEntry = {
+                  id: res.data?.id ?? Date.now(),
+                  type: "checkout",
+                  lat: res.data?.lat,
+                  lng: res.data?.lng,
+                  created_at: res.data?.created_at ?? new Date().toISOString(),
+                };
+                return [checkoutEntry, ...(prev ?? [])];
+              });
+            }
+
             return fetchAttendanceLogs()
-              .then(() => fetchAttendanceStatus())
               .then(() => fetchWorkedTime())
+              .then(() => fetchAttendanceStatus())
               .then(() => fetchLeaveSummary());
           })
           .catch((err) => {
@@ -648,7 +717,7 @@ export function EmployeeDashboard() {
 
   /** Nächste Schichten (ab heute) für Dashboard-Karte */
   const upcomingShiftsPreview = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localIsoToday();
     return [...myShifts]
       .filter((sh) => sh.shift_date >= today)
       .sort((a, b) => (a.shift_date + a.start_time).localeCompare(b.shift_date + b.start_time))
@@ -666,8 +735,13 @@ export function EmployeeDashboard() {
 
   const isCheckedIn = attendanceStatus?.status === "checked_in";
   const activeCheckinIso = useMemo(
-    () => resolveActiveCheckinIso(workedTime, logs, isCheckedIn),
-    [workedTime, logs, isCheckedIn],
+    () => resolveLiveSessionStartIso(
+      isCheckedIn,
+      liveSessionStartAt,
+      attendanceStatus,
+      logs,
+    ),
+    [isCheckedIn, liveSessionStartAt, attendanceStatus, logs],
   );
   useTickingNow(Boolean(isCheckedIn && activeCheckinIso));
 
@@ -765,6 +839,14 @@ export function EmployeeDashboard() {
               <span className="ed-topbar__user-name">{data.name}</span>
               <span className="ed-topbar__user-role">{formatRoleDe(data.role)}</span>
             </div>
+            <button
+              type="button"
+              className="ed-topbar__mobile-logout"
+              onClick={() => { clearToken(); navigate("/login"); }}
+              aria-label="Ausloggen"
+            >
+              <IcoLogout />
+            </button>
           </div>
         </div>
 
@@ -787,9 +869,7 @@ export function EmployeeDashboard() {
                   {workedLoading
                     ? "…"
                     : workedTime
-                      ? `${(workedTime.official_hours_month ?? workedTime.official_hours ?? 0)
-                          .toFixed(1)
-                          .replace(/\.0$/, "")} h`
+                      ? formatDurationSeconds(workedTime.official_seconds_month ?? 0)
                       : "—"}
                 </div>
                 <div className="ed-stat-card__label">Offiziell (Monat)</div>
@@ -910,17 +990,17 @@ export function EmployeeDashboard() {
                             <div className="ed-live-shift__clock" aria-live="polite" aria-atomic="true">
                               <span className="ed-live-shift__unit">
                                 <span className="ed-live-shift__num">{pad2(liveShiftParts.h)}</span>
-                                <span className="ed-live-shift__cap">Std.</span>
+                                <span className="ed-live-shift__cap">h</span>
                               </span>
                               <span className="ed-live-shift__colon" aria-hidden>:</span>
                               <span className="ed-live-shift__unit">
                                 <span className="ed-live-shift__num">{pad2(liveShiftParts.m)}</span>
-                                <span className="ed-live-shift__cap">Min.</span>
+                                <span className="ed-live-shift__cap">m</span>
                               </span>
                               <span className="ed-live-shift__colon" aria-hidden>:</span>
                               <span className="ed-live-shift__unit">
                                 <span className="ed-live-shift__num">{pad2(liveShiftParts.s)}</span>
-                                <span className="ed-live-shift__cap">Sek.</span>
+                                <span className="ed-live-shift__cap">s</span>
                               </span>
                             </div>
                             <p className="ed-live-shift__hint">
@@ -930,8 +1010,8 @@ export function EmployeeDashboard() {
                         )}
                         {!isCheckedIn && (
                           <p className="ed-hint ed-live-shift__idle">
-                            Keine laufende Schicht. Nach <strong>Einstempeln</strong> erscheint hier die Live-Zeit
-                            (Std. · Min. · Sek.).
+                            Keine laufende Schicht. Nach <strong>Einstempeln</strong> startet die Live-Zeit bei{" "}
+                            <strong>0 h : 00 m : 00 s</strong>.
                           </p>
                         )}
                       </div>
@@ -953,18 +1033,18 @@ export function EmployeeDashboard() {
                             <div className="ed-overview__month-budget-rows">
                               <div className="ed-overview__month-budget-row">
                                 <span>Monatssoll</span>
-                                <strong>{monthHoursRemain.target} h</strong>
+                                <strong>{formatDurationSeconds(monthHoursRemain.target * 3600)}</strong>
                               </div>
                               <div className="ed-overview__month-budget-row">
                                 <span>Offiziell (Monat)</span>
                                 <strong className="ed-overview__month-budget-done">
-                                  {monthHoursRemain.done.toFixed(1).replace(/\.0$/, "")} h
+                                  {formatDurationSeconds(monthHoursRemain.done * 3600)}
                                 </strong>
                               </div>
                               {monthHoursRemain.pend > 0 && (
                                 <div className="ed-overview__month-budget-row ed-overview__month-budget-row--muted">
                                   <span>Davon ausstehend</span>
-                                  <strong>{monthHoursRemain.pend.toFixed(1).replace(/\.0$/, "")} h</strong>
+                                  <strong>{formatDurationSeconds(monthHoursRemain.pend * 3600)}</strong>
                                 </div>
                               )}
                             </div>
@@ -978,7 +1058,7 @@ export function EmployeeDashboard() {
                                 <>
                                   <span className="ed-overview__month-budget-remain-label">Noch zu leisten</span>
                                   <span className="ed-overview__month-budget-remain-val">
-                                    ca. {monthHoursRemain.remain.toFixed(1).replace(/\.0$/, "")} h
+                                    {formatDurationSeconds(monthHoursRemain.remain * 3600)}
                                   </span>
                                 </>
                               ) : (
@@ -987,7 +1067,7 @@ export function EmployeeDashboard() {
                                   <span className="ed-overview__month-budget-remain-val">
                                     erreicht
                                     {monthHoursRemain.remain < 0
-                                      ? ` · +${Math.abs(monthHoursRemain.remain).toFixed(1).replace(/\.0$/, "")} h über Soll`
+                                      ? ` · +${formatDurationSeconds(Math.abs(monthHoursRemain.remain) * 3600)} über Soll`
                                       : ""}
                                   </span>
                                 </>
@@ -1076,8 +1156,8 @@ export function EmployeeDashboard() {
 
                   <div className="ed-overview__tri-col ed-overview__tri-col--worked">
                     <div className="ed-card ed-overview__extra">
-                      <h3 className="ed-overview__quick-title">Arbeitszeit</h3>
-                      <p className="ed-hint ed-overview__extra-hint">Offizielle und ausstehende Zeiten.</p>
+                      <h3 className="ed-overview__quick-title">Arbeitszeit (Monat)</h3>
+                      <p className="ed-hint ed-overview__extra-hint">Offizielle und ausstehende Zeiten diesen Monat.</p>
                       {workedLoading ? (
                         <p className="ed-hint">Arbeitszeit wird geladen…</p>
                       ) : workedError ? (
@@ -1089,13 +1169,13 @@ export function EmployeeDashboard() {
                           <div className="ed-overview__worked-row">
                             <span className="ed-overview__worked-label">Offiziell</span>
                             <strong className="ed-overview__worked-val ed-overview__worked-val--ok">
-                              {formatDurationSeconds(workedTime.official_seconds ?? 0)}
+                              {formatDurationSeconds(workedTime.official_seconds_month ?? 0)}
                             </strong>
                           </div>
                           <div className="ed-overview__worked-row">
                             <span className="ed-overview__worked-label">Ausstehend</span>
                             <strong className="ed-overview__worked-val ed-overview__worked-val--pend">
-                              {formatDurationSeconds(workedTime.pending_seconds ?? 0)}
+                              {formatDurationSeconds(workedTime.pending_seconds_month ?? 0)}
                               <span className="ed-overview__worked-meta"> ({workedTime.pending_count ?? 0})</span>
                             </strong>
                           </div>
@@ -1200,7 +1280,9 @@ export function EmployeeDashboard() {
                     <p className="ed-alert" role="alert">{gpsError}</p>
                   )}
                   {attendanceResponse && (
-                    <pre className="ed-pre">{JSON.stringify(attendanceResponse, null, 2)}</pre>
+                    <p className="ed-fence ed-fence--inside" role="status">
+                      {attendanceResponse.type === "checkout" ? "Ausstempelung gespeichert." : "Einstempelung gespeichert."}
+                    </p>
                   )}
                 </div>
               </div>
@@ -1208,82 +1290,216 @@ export function EmployeeDashboard() {
           )}
 
           {/* ═══ WORKED TIME ═════════════════════════════════════════════ */}
-          {activeTab === "worked" && (
-            <div className="ed-section">
-              <div className="ed-section-title"><h2>Arbeitszeit</h2></div>
-              <div className="ed-card">
-                <p className="ed-hint">
-                  Jedes Einstempeln wird mit dem nächsten Ausstempeln gepaart.
-                  Ein offenes Einstempeln zählt bis jetzt.
-                </p>
+          {activeTab === "worked" && (() => {
+            const loading = workedLoading || sessionsLoading;
+            const pendingSessions  = mySessions.filter(s => s.status === "pending");
+            const officialSessions = mySessions.filter(s => s.status === "approved" || s.status === "corrected");
+            const rejectedSessions = mySessions.filter(s => s.status === "rejected");
 
-                {workedLoading ? (
-                  <p className="ed-hint">Arbeitszeit wird geladen…</p>
+            const fmtTime = (iso) => iso
+              ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+              : "—";
+            const fmtDate = (iso) => iso
+              ? new Date(iso).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })
+              : "—";
+
+            const WARN_THRESHOLD_S = 12 * 3600; // 12 Stunden
+
+            const SessionCard = ({ s }) => {
+              const isCorrected = s.status === "corrected";
+              const isLong      = s.duration_seconds > WARN_THRESHOLD_S;
+              const isPending   = s.status === "pending";
+              const isApproved  = s.status === "approved";
+              const isRejected  = s.status === "rejected";
+
+              const cardCls = isCorrected ? "wt-card wt-card--corrected"
+                            : isApproved  ? "wt-card wt-card--approved"
+                            : isRejected  ? "wt-card wt-card--rejected"
+                            : isLong      ? "wt-card wt-card--pending wt-card--warn"
+                            :               "wt-card wt-card--pending";
+
+              const checkinDate = fmtDate(s.checkin_time);
+
+              return (
+                <div className={cardCls}>
+                  <div className="wt-card__head">
+                    <div className="wt-card__date">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {checkinDate}
+                    </div>
+                    <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                      {isPending && isLong && (
+                        <span className="wt-card__warn-badge">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                          Vergessen?
+                        </span>
+                      )}
+                      {isCorrected && (
+                        <span className="wt-card__badge wt-card__badge--corrected">✎ Korrigiert</span>
+                      )}
+                      {isApproved && (
+                        <span className="wt-card__badge wt-card__badge--approved">✓ Genehmigt</span>
+                      )}
+                      {isPending && (
+                        <span className="wt-card__badge wt-card__badge--pending">⏳ Ausstehend</span>
+                      )}
+                      {isRejected && (
+                        <span className="wt-card__badge wt-card__badge--rejected">✖ Abgelehnt</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Zeitleiste */}
+                  <div className="wt-card__timeline">
+                    <div className="wt-card__time-block">
+                      <div className="wt-card__time-label">Eingestempelt</div>
+                      <div className="wt-card__time-val">{fmtTime(s.checkin_time)}</div>
+                    </div>
+                    <div className="wt-card__arrow">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </div>
+                    <div className="wt-card__time-block">
+                      <div className="wt-card__time-label">Ausgestempelt</div>
+                      <div className={`wt-card__time-val ${!s.checkout_time ? "wt-card__time-val--muted" : ""}`}>
+                        {s.checkout_time ? fmtTime(s.checkout_time) : <em>offen</em>}
+                      </div>
+                    </div>
+                    <div className="wt-card__dur">
+                      <div className="wt-card__dur-label">Dauer</div>
+                      <div className="wt-card__dur-val">{formatDurationSeconds(s.duration_seconds)}</div>
+                    </div>
+                  </div>
+
+                  {/* Originale Zeiten bei Korrekturen */}
+                  {isCorrected && (s.original_checkin_time || s.original_checkout_time) && (
+                    <div className="wt-card__orig-row">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      <span className="wt-card__orig-label">Original:</span>
+                      <span className="wt-card__orig-times">
+                        {fmtDate(s.original_checkin_time)} {fmtTime(s.original_checkin_time)}
+                        &nbsp;→&nbsp;
+                        {s.original_checkout_time ? fmtTime(s.original_checkout_time) : "—"}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Admin-Notiz / Ablehnungsgrund */}
+                  {(s.admin_note || s.rejection_reason) && (
+                    <div className={`wt-card__note ${isRejected ? "wt-card__note--red" : "wt-card__note--blue"}`}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                      {isRejected ? `Grund: ${s.rejection_reason}` : `Notiz: ${s.admin_note}`}
+                    </div>
+                  )}
+
+                  {/* Warnung bei sehr langer ausstehender Session */}
+                  {isPending && isLong && (
+                    <div className="wt-card__warn-hint">
+                      Möglicherweise vergessen auszustempeln — wartet auf Admin-Korrektur
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <div className="ed-section wt-section">
+                {loading ? (
+                  <div className="wt-loading">Arbeitszeit wird geladen…</div>
                 ) : workedError ? (
                   <p className="ed-alert" role="alert">{workedError}</p>
                 ) : !workedTime ? (
                   <p className="ed-empty">Keine Arbeitszeit-Daten vorhanden.</p>
                 ) : (
                   <>
-                    <div className="ed-worked-grid">
-                      <div className="ed-worked-stat">
-                        <span className="ed-worked-stat__value" style={{ color: "#16a34a" }}>
-                          {formatDurationSeconds(workedTime.official_seconds ?? 0)}
-                        </span>
-                        <span className="ed-worked-stat__label">Offizielle Stunden</span>
+                    {/* ── Hero-Karte ──────────────────────────────────── */}
+                    <div className="wt-hero">
+                      <div className="wt-hero__left">
+                        <div className="wt-hero__kicker">Offizielle Arbeitszeit (Monat)</div>
+                        <div className="wt-hero__value">
+                          {formatDurationSeconds(workedTime.official_seconds_month ?? 0)}
+                        </div>
+                        <div className="wt-hero__sub">Genehmigt &amp; Korrigiert</div>
                       </div>
-                      <div className="ed-worked-stat">
-                        <span className="ed-worked-stat__value" style={{ color: "#d97706" }}>
-                          {formatDurationSeconds(workedTime.pending_seconds ?? 0)}
-                        </span>
-                        <span className="ed-worked-stat__label">Ausstehend ({workedTime.pending_count ?? 0})</span>
-                      </div>
-                      <div className="ed-worked-stat">
-                        <span className="ed-worked-stat__value">
-                          <span className={`ed-badge ed-badge--${workedTime.active ? "green" : "gray"}`}>
-                            {workedTime.active ? "Aktiv" : "Inaktiv"}
-                          </span>
-                        </span>
-                        <span className="ed-worked-stat__label">Stempelung</span>
+                      <div className="wt-hero__right">
+                        <div className="wt-hero__stat">
+                          <div className="wt-hero__stat-val wt-hero__stat-val--amber">
+                            {formatDurationSeconds(workedTime.pending_seconds_month ?? 0)}
+                          </div>
+                          <div className="wt-hero__stat-lbl">Ausstehend — wartet auf Admin</div>
+                        </div>
+                        <div className="wt-hero__divider" />
+                        <div className="wt-hero__stat">
+                          <div className={`wt-hero__dot ${workedTime.active ? "wt-hero__dot--active" : "wt-hero__dot--idle"}`}>
+                            <span className="wt-hero__dot-pulse" />
+                          </div>
+                          <div className="wt-hero__stat-lbl">
+                            {workedTime.active ? "Eingestempelt" : "Ausgestempelt"}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <p className="ed-hint" style={{ marginTop: "0.5rem", marginBottom: "1rem" }}>
-                      Offizielle Stunden = genehmigt + korrigiert. Ausstehende warten auf Admin-Genehmigung.
-                    </p>
 
-                    {workedTime.sessions.length === 0 ? (
-                      <p className="ed-empty">Noch keine abgeschlossenen oder offenen Sessions.</p>
-                    ) : (
+                    {/* ── Ausstehende Schichten ───────────────────────── */}
+                    {pendingSessions.length > 0 && (
                       <>
-                        <div className="ed-sessions__header">
-                          <span>Status</span>
-                          <span>Eingestempelt</span>
-                          <span>Ausgestempelt</span>
-                          <span>Dauer</span>
+                        <div className="wt-section-header wt-section-header--pending">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          Ausstehende Schichten
+                          <span className="wt-section-header__count">{pendingSessions.length}</span>
+                          <span className="wt-section-header__total">
+                            · gesamt {formatDurationSeconds(pendingSessions.reduce((a, s) => a + s.duration_seconds, 0))}
+                          </span>
                         </div>
-                        <ul className="ed-sessions">
-                          {workedTime.sessions.map((session, idx) => (
-                            <li key={`${session.checkin}-${idx}`}>
-                              <span className="ed-session-type">
-                                {session.checkout ? "Abgeschlossen" : "Aktiv"}
-                              </span>
-                              <span className="ed-session-time">{formatLogTime(session.checkin)}</span>
-                              <span className="ed-session-time">
-                                {session.checkout ? formatLogTime(session.checkout) : "— (noch aktiv)"}
-                              </span>
-                              <span className="ed-session-duration">
-                                {formatDurationSeconds(session.duration_seconds)}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
+                        <div className="wt-cards">
+                          {pendingSessions.map(s => <SessionCard key={s.id} s={s} />)}
+                        </div>
                       </>
                     )}
+
+                    {/* ── Genehmigte & Korrigierte Schichten ─────────── */}
+                    {officialSessions.length > 0 && (
+                      <>
+                        <div className="wt-section-header wt-section-header--official">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                          Genehmigte &amp; Korrigierte Schichten
+                          <span className="wt-section-header__count">{officialSessions.length}</span>
+                        </div>
+                        <div className="wt-cards">
+                          {officialSessions.map(s => <SessionCard key={s.id} s={s} />)}
+                        </div>
+                      </>
+                    )}
+
+                    {/* ── Abgelehnte Schichten ────────────────────────── */}
+                    {rejectedSessions.length > 0 && (
+                      <>
+                        <div className="wt-section-header wt-section-header--rejected">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                          Abgelehnte Schichten
+                          <span className="wt-section-header__count">{rejectedSessions.length}</span>
+                        </div>
+                        <div className="wt-cards">
+                          {rejectedSessions.map(s => <SessionCard key={s.id} s={s} />)}
+                        </div>
+                      </>
+                    )}
+
+                    {/* ── Leer-Zustand ────────────────────────────────── */}
+                    {mySessions.length === 0 && !sessionsLoading && (
+                      <div className="wt-empty">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        <span>Noch keine Schichten vorhanden.</span>
+                      </div>
+                    )}
+
+                    <p className="wt-footnote">
+                      Offizielle Arbeitszeit = genehmigt + korrigiert · Ausstehend = wartet auf Admin-Entscheidung
+                    </p>
                   </>
                 )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ═══ MEINE SCHICHTEN ═════════════════════════════════════════ */}
           {activeTab === "shifts" && (
@@ -1456,68 +1672,131 @@ export function EmployeeDashboard() {
 
           {/* ═══ MEINE SESSIONS ══════════════════════════════════════════ */}
           {activeTab === "sessions" && (
-            <div className="ed-section">
-              <div className="ed-section-title">
-                <h2>Meine Sessions</h2>
-                <button type="button" className="ed-btn ed-btn--ghost ed-btn--sm"
+            <div className="ed-section wt-section">
+              <div className="wt-sessions-toolbar">
+                <h2 className="wt-sessions-toolbar__title">Meine Sessions</h2>
+                <button type="button" className="wt-refresh-btn"
                   onClick={fetchMySessions} disabled={sessionsLoading}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64L3 21v-6h6l-2.73 2.73A7 7 0 1 0 5 12"/></svg>
                   {sessionsLoading ? "Lädt…" : "Aktualisieren"}
                 </button>
               </div>
-              <div className="ed-card">
-                <p className="ed-hint">
-                  Jede abgeschlossene Schicht wartet auf Admin-Genehmigung.
-                  Hier siehst du den aktuellen Status deiner Arbeitszeiten.
-                </p>
 
-                {sessionsLoading ? (
-                  <p className="ed-hint">Sessions werden geladen…</p>
-                ) : sessionsError ? (
-                  <p className="ed-alert" role="alert">{sessionsError}</p>
-                ) : mySessions.length === 0 ? (
-                  <div className="ed-empty-state">
-                    <span className="ed-empty-state__icon">✅</span>
-                    <p className="ed-empty-state__text">Noch keine Sessions vorhanden.</p>
-                    <p className="ed-hint" style={{ textAlign: "center" }}>
-                      Nach dem ersten Ausstempeln erscheint deine Session hier.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="ed-table-wrap">
-                    <table className="ed-table">
-                      <thead>
-                        <tr>
-                          <th scope="col">Eingestempelt</th>
-                          <th scope="col">Ausgestempelt</th>
-                          <th scope="col">Dauer</th>
-                          <th scope="col">Status</th>
-                          <th scope="col">Info</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {mySessions.map((s) => (
-                          <tr key={s.id}>
-                            <td>{formatLogTime(s.checkin_time)}</td>
-                            <td>{s.checkout_time ? formatLogTime(s.checkout_time) : <em>offen</em>}</td>
-                            <td>{formatDurationSeconds(s.duration_seconds)}</td>
-                            <td><SessionStatusBadge status={s.status} /></td>
-                            <td>
-                              {s.rejection_reason && (
-                                <span className="ed-hint" style={{ color: "#b91c1c" }}>
-                                  Grund: {s.rejection_reason}
-                                </span>
-                              )}
+              {sessionsLoading ? (
+                <div className="wt-loading">Sessions werden geladen…</div>
+              ) : sessionsError ? (
+                <p className="ed-alert" role="alert">{sessionsError}</p>
+              ) : mySessions.length === 0 ? (
+                <div className="wt-empty">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                  <span>Noch keine Sessions. Nach dem ersten Ausstempeln erscheinen sie hier.</span>
+                </div>
+              ) : (
+                <>
+                  {/* Korrektur-Benachrichtigungen */}
+                  {mySessions.filter(s => s.status === "corrected").length > 0 && (
+                    <div className="wt-notif-group">
+                      <div className="wt-notif-group__title">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                        Admin-Korrekturen
+                      </div>
+                      {mySessions.filter(s => s.status === "corrected").map(s => {
+                        const ciDate = s.checkin_time
+                          ? new Date(s.checkin_time).toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long" })
+                          : "—";
+                        const coTime = s.checkout_time
+                          ? new Date(s.checkout_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+                          : "—";
+                        const coDate = s.checkout_time
+                          ? new Date(s.checkout_time).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" })
+                          : "—";
+                        return (
+                          <div key={`notif-${s.id}`} className="wt-notif-card">
+                            <div className="wt-notif-card__icon">
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </div>
+                            <div className="wt-notif-card__body">
+                              <div className="wt-notif-card__title">
+                                Admin hat deine Schicht vom {ciDate} korrigiert
+                              </div>
+                              <div className="wt-notif-card__detail">
+                                Ausstempelzeit wurde auf <strong>{coTime} Uhr ({coDate})</strong> gesetzt
+                                · Dauer: <strong>{formatDurationSeconds(s.duration_seconds)}</strong>
+                              </div>
                               {s.admin_note && (
-                                <span className="ed-hint">Notiz: {s.admin_note}</span>
+                                <div className="wt-notif-card__note">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                  {s.admin_note}
+                                </div>
                               )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Alle Sessions als Karten */}
+                  <div className="wt-cards">
+                    {mySessions.map((s) => {
+                      const ciDate = s.checkin_time
+                        ? new Date(s.checkin_time).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })
+                        : "—";
+                      const STATUS_CFG = {
+                        approved:  { cls: "wt-scard__badge--approved",  label: "✓ Genehmigt"   },
+                        corrected: { cls: "wt-scard__badge--corrected", label: "✎ Korrigiert"  },
+                        rejected:  { cls: "wt-scard__badge--rejected",  label: "✖ Abgelehnt"   },
+                        pending:   { cls: "wt-scard__badge--pending",   label: "⏳ Ausstehend" },
+                      };
+                      const cfg = STATUS_CFG[s.status] ?? STATUS_CFG.pending;
+                      return (
+                        <div key={s.id} className={`wt-scard ${s.status === "corrected" ? "wt-scard--corrected" : ""} ${s.status === "rejected" ? "wt-scard--rejected" : ""}`}>
+                          <div className="wt-scard__head">
+                            <div className="wt-scard__date">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                              {ciDate}
+                            </div>
+                            <span className={`wt-scard__badge ${cfg.cls}`}>{cfg.label}</span>
+                          </div>
+                          <div className="wt-scard__timeline">
+                            <div className="wt-card__time-block">
+                              <div className="wt-card__time-label">Eingestempelt</div>
+                              <div className="wt-card__time-val">
+                                {s.checkin_time
+                                  ? new Date(s.checkin_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+                                  : "—"}
+                              </div>
+                            </div>
+                            <div className="wt-card__arrow">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                            </div>
+                            <div className="wt-card__time-block">
+                              <div className="wt-card__time-label">
+                                Ausgestempelt {s.status === "corrected" && <span className="wt-scard__corrected-tag">korrigiert</span>}
+                              </div>
+                              <div className="wt-card__time-val">
+                                {s.checkout_time
+                                  ? new Date(s.checkout_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+                                  : <em style={{ color: "#94a3b8" }}>offen</em>}
+                              </div>
+                            </div>
+                            <div className="wt-card__dur">
+                              <div className="wt-card__dur-label">Dauer</div>
+                              <div className="wt-card__dur-val">{formatDurationSeconds(s.duration_seconds)}</div>
+                            </div>
+                          </div>
+                          {(s.rejection_reason || s.admin_note) && (
+                            <div className={`wt-scard__info ${s.status === "rejected" ? "wt-scard__info--red" : "wt-scard__info--blue"}`}>
+                              {s.rejection_reason && <span>Grund: {s.rejection_reason}</span>}
+                              {s.admin_note && <span>Notiz: {s.admin_note}</span>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1574,127 +1853,35 @@ export function EmployeeDashboard() {
             </div>
           )}
 
-          {/* ═══ AI ASSISTANT ════════════════════════════════════════ */}
-          {activeTab === "ai" && (
-            <div className="ed-section">
-              <div className="ed-section-title">
-                <h2>KI-Empfangsassistent</h2>
-                {aiMessages.length > 0 && (
-                  <button
-                    type="button"
-                    className="ed-btn ed-btn--ghost ed-btn--sm"
-                    onClick={() => { setAiMessages([]); setAiError(null); }}
-                  >
-                    Chat leeren
-                  </button>
-                )}
-              </div>
-
-              <div className="ed-card ed-chat-card">
-                <p className="ed-chat-hint">
-                  🤖 Stelle Fragen zu deinen Reception-Dokumenten.
-                  Die KI antwortet nur auf Basis der hinterlegten Hotel-SOPs.
-                </p>
-
-                {/* ── Nachrichtenverlauf ── */}
-                <div className="ed-chat-messages">
-                  {aiMessages.length === 0 && (
-                    <div className="ed-chat-empty">
-                      <span>💬</span>
-                      <p>Noch keine Fragen gestellt.</p>
-                      <p className="ed-chat-empty-hint">
-                        Beispiel: „Wie erfasse ich eine Ankunft in Opera?"
-                      </p>
-                    </div>
-                  )}
-
-                  {aiMessages.map((msg, i) => (
-                    <div key={i} className={`ed-chat-msg ed-chat-msg--${msg.role}`}>
-                      {/* Avatar links (Assistent) */}
-                      {msg.role === "assistant" && (
-                        <div className="ed-chat-avatar">🤖</div>
-                      )}
-
-                      {/* Bubble */}
-                      <div className={`ed-chat-bubble${msg.isError ? " ed-chat-bubble--error" : ""}`}>
-                        <div className="ed-chat-text">
-                          <MdText text={msg.content} />
-                        </div>
-
-                        {/* Quellen */}
-                        {msg.sources?.length > 0 && (
-                          <div className="ed-chat-sources">
-                            {/* Deduplizieren: gleiche Seite nur einmal */}
-                            {msg.sources
-                              .filter((s, idx, arr) =>
-                                arr.findIndex((x) => x.document === s.document && x.page === s.page) === idx
-                              )
-                              .map((s, si) => (
-                                <span key={si} className="ed-chat-source">
-                                  📄 {s.document.replace("_reception_sop.pdf", "").replace(/_/g, " ")} · S. {s.page}
-                                </span>
-                              ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Avatar rechts (User) */}
-                      {msg.role === "user" && (
-                        <div className="ed-chat-avatar ed-chat-avatar--user">
-                          {data.name?.[0]?.toUpperCase() ?? "?"}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  {/* Lade-Indikator */}
-                  {aiLoading && (
-                    <div className="ed-chat-msg ed-chat-msg--assistant">
-                      <div className="ed-chat-avatar">🤖</div>
-                      <div className="ed-chat-bubble ed-chat-bubble--loading">
-                        <span className="ed-chat-dots">
-                          <span /><span /><span />
-                        </span>
-                        Antwort wird gesucht…
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Scroll-Anker */}
-                  <div ref={chatBottomRef} />
-                </div>
-
-                {/* ── Eingabebereich ── */}
-                <form className="ed-chat-form" onSubmit={handleAiAsk}>
-                  <textarea
-                    className="ed-chat-input"
-                    placeholder='z. B. „Wie stelle ich in Opera eine Rechnung aus?"'
-                    value={aiInput}
-                    rows={2}
-                    disabled={aiLoading}
-                    onChange={(e) => setAiInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      // Enter allein = Absenden, Shift+Enter = neue Zeile
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleAiAsk(e);
-                      }
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    className="ed-chat-send"
-                    disabled={aiLoading || !aiInput.trim()}
-                  >
-                    {aiLoading ? "…" : "Fragen →"}
-                  </button>
-                </form>
-              </div>
-            </div>
-          )}
 
         </div>
       </div>
+
+      {/* ═══ MOBILE BOTTOM NAV ════════════════════════════════════════════ */}
+      <nav className="ed-mobile-nav" aria-label="Mobile Navigation">
+        {[
+          { id: "overview", label: "Home",       Icon: IcoHome     },
+          { id: "checkin",  label: "Stempeln",   Icon: IcoCheckin  },
+          { id: "worked",   label: "Arbeitszeit", Icon: IcoWorked  },
+          { id: "leave",    label: "Urlaub",     Icon: IcoVacation },
+          { id: "logs",     label: "Protokoll",  Icon: IcoLogs     },
+        ].map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            className={[
+              "ed-mobile-nav__item",
+              activeTab === id ? "ed-mobile-nav__item--active" : "",
+              id === "checkin" && isCheckedIn ? "ed-mobile-nav__item--checkin-active" : "",
+            ].filter(Boolean).join(" ")}
+            onClick={() => setActiveTab(id)}
+          >
+            <span className="ed-mobile-nav__icon"><Icon /></span>
+            <span className="ed-mobile-nav__label">{label}</span>
+          </button>
+        ))}
+      </nav>
+
     </div>
   );
 }
@@ -1711,9 +1898,7 @@ function formatDurationSeconds(totalSeconds) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (h > 0) return `${h} h ${m} min`;
-  if (m > 0) return `${m} min ${sec} s`;
-  return `${sec} s`;
+  return `${h} h : ${String(m).padStart(2, "0")} m : ${String(sec).padStart(2, "0")} s`;
 }
 
 function normalizeTypeKey(type) {

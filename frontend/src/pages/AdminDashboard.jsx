@@ -10,6 +10,7 @@ import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from "r
 import { Link, useNavigate } from "react-router-dom";
 import { apiClient, clearToken } from "../apiClient";
 import "./AdminDashboard.css";
+import "./emp-layout.css";
 
 // ── Leaflet icon fix ────────────────────────────────────────────────────────
 delete L.Icon.Default.prototype._getIconUrl;
@@ -21,6 +22,7 @@ L.Icon.Default.mergeOptions({
 
 // ── API URLs ────────────────────────────────────────────────────────────────
 const EMPLOYEES_URL  = "/admin/employees";
+const INVITE_CODES_URL = "/admin/invite-codes";
 const LOCATIONS_URL  = "/admin/locations";
 const ATTENDANCE_URL = "/admin/attendance";
 const STATISTICS_URL = "/admin/statistics";
@@ -37,6 +39,15 @@ const DEFAULT_CENTER = [52.4006, 9.6656];
 // ── Report V2 constants ─────────────────────────────────────────────────────
 const RC_PIE_COLORS = ["#2563eb","#16a34a","#f59e0b","#dc2626","#7c3aed","#0891b2","#db2777"];
 const V2_PAGE_SIZE  = 20;
+
+// ── Mitarbeiter-Avatare: deterministische Farbe pro Name ────────────────────
+const AVATAR_PALETTE = ["#1d4ed8","#0f766e","#7c3aed","#c2410c","#0891b2","#be123c","#4338ca","#15803d"];
+function avatarColorForName(name) {
+  const s = String(name || "");
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
 
 // ── SVG Icons ───────────────────────────────────────────────────────────────
 const Ico = {
@@ -153,7 +164,7 @@ function Sidebar({ active, onNav, onLogout, pendingCount, leavePendingCount }) {
 }
 
 // ── Topbar ──────────────────────────────────────────────────────────────────
-function Topbar({ section, user, onRefresh, busy, pendingCount }) {
+function Topbar({ section, user, onRefresh, busy, pendingCount, onNav }) {
   const label = NAV_ITEMS.find((n) => n.id === section)?.label ?? "Dashboard";
   const now = new Date();
   const dateStr = now.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
@@ -162,17 +173,6 @@ function Topbar({ section, user, onRefresh, busy, pendingCount }) {
       <div className="ad-topbar__left">
         <h1 className="ad-topbar__title">{label}</h1>
         <span className="ad-topbar__date">{dateStr}</span>
-      </div>
-
-      <div className="ad-topbar__search">
-        <span className="ad-topbar__search-icon">{Ico.search}</span>
-        <input
-          className="ad-topbar__search-input"
-          placeholder="Mitarbeiter suchen..."
-          readOnly
-          tabIndex={-1}
-        />
-        <kbd className="ad-topbar__search-kbd">⌘K</kbd>
       </div>
 
       <div className="ad-topbar__right">
@@ -184,16 +184,17 @@ function Topbar({ section, user, onRefresh, busy, pendingCount }) {
           {Ico.refresh}
         </button>
         <div className="ad-topbar__notif-wrap">
-          <button className="ad-topbar__icon-btn" title="Benachrichtigungen" onClick={() => {}}>
+          <button
+            className="ad-topbar__icon-btn"
+            title={pendingCount > 0 ? `${pendingCount} Genehmigung${pendingCount > 1 ? "en" : ""} ausstehend` : "Benachrichtigungen"}
+            onClick={() => onNav("approvals")}
+          >
             {Ico.bell}
           </button>
           {pendingCount > 0 && (
             <span className="ad-topbar__notif-badge">{pendingCount}</span>
           )}
         </div>
-        <button className="ad-topbar__icon-btn" title="Design">
-          {Ico.sun}
-        </button>
         <div className="ad-topbar__divider" />
         <div className="ad-topbar__user">
           <div className="ad-topbar__avatar-wrap">
@@ -643,7 +644,17 @@ export function AdminDashboard() {
   const [newEmpAnnual, setNewEmpAnnual]     = useState("");
   const [empFormError, setEmpFormError]     = useState(null);
   const [empFormBusy, setEmpFormBusy]       = useState(false);
-  const [showNewEmpForm, setShowNewEmpForm] = useState(false);
+  // Purely visual: which row is highlighted in the employee list panel
+  const [selectedEmpId, setSelectedEmpId]   = useState(null);
+  const [empListSearch, setEmpListSearch]   = useState("");
+  // Mitarbeiter-Seite: Tab-Leiste (verwalten / anlegen / Einladungscodes)
+  const [empTab, setEmpTab] = useState("manage");
+
+  // ── Einladungscodes ───────────────────────────────────────────────────────
+  const [inviteCode, setInviteCode]           = useState(null);
+  const [inviteCodeBusy, setInviteCodeBusy]   = useState(false);
+  const [inviteCodeError, setInviteCodeError] = useState(null);
+  const [inviteCodeCopied, setInviteCodeCopied] = useState(false);
 
   // ── Employee edit ─────────────────────────────────────────────────────────
   const [empEditId, setEmpEditId]       = useState(null);
@@ -881,45 +892,68 @@ export function AdminDashboard() {
   }, []);
 
   // ── Load all data ─────────────────────────────────────────────────────────
+  // Promise.allSettled statt Promise.all: ein einzelner fehlschlagender Endpunkt
+  // (z. B. Statistik) darf die anderen State-Updates (z. B. Schichten) nicht
+  // verwerfen — sonst wirkt eine neu angelegte Schicht "nicht gespeichert",
+  // obwohl sie in der DB längst existiert und erst nach F5 sichtbar wird.
   const refreshAll = useCallback(async () => {
     setLoadError(null); setBusy(true);
-    try {
-      const [eRes, lRes, aRes, sRes, shRes, meRes] = await Promise.all([
-        apiClient.get(EMPLOYEES_URL),
-        apiClient.get(LOCATIONS_URL),
-        apiClient.get(ATTENDANCE_URL),
-        apiClient.get(STATISTICS_URL),
-        apiClient.get(SHIFTS_URL),
-        apiClient.get("/auth/me"),
-      ]);
-      setEmployees(eRes.data ?? []);
-      setLocations(lRes.data ?? []);
-      setAttendance(aRes.data ?? []);
-      setStatistics(sRes.data ?? null);
-      setShifts(shRes.data ?? []);
-      setCurrentUser(meRes.data ?? null);
-      // Fetch approval counts for badge / dashboard widget
-      try {
-        const appRes = await apiClient.get("/admin/approvals/work-sessions");
-        const allA = appRes.data ?? [];
-        setPendingCount(allA.filter((a) => a.status === "pending").length);
-        setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
-        setRejectedCount(allA.filter((a) => a.status === "rejected").length);
-      } catch { /* counts stay at previous value */ }
-      try {
-        const lr = await apiClient.get("/admin/leave-requests?status=pending");
-        setLeavePendingCount((lr.data ?? []).length);
-      } catch {
-        setLeavePendingCount(0);
-      }
-    } catch (err) {
-      setLoadError(axios.isAxiosError(err) && err.response?.status === 403
+    const [eRes, lRes, aRes, sRes, shRes, meRes] = await Promise.allSettled([
+      apiClient.get(EMPLOYEES_URL),
+      apiClient.get(LOCATIONS_URL),
+      apiClient.get(ATTENDANCE_URL),
+      apiClient.get(STATISTICS_URL),
+      apiClient.get(SHIFTS_URL),
+      apiClient.get("/auth/me"),
+    ]);
+
+    if (eRes.status === "fulfilled") setEmployees(eRes.value.data ?? []);
+    if (lRes.status === "fulfilled") setLocations(lRes.value.data ?? []);
+    if (aRes.status === "fulfilled") setAttendance(aRes.value.data ?? []);
+    if (sRes.status === "fulfilled") setStatistics(sRes.value.data ?? null);
+    if (shRes.status === "fulfilled") setShifts(shRes.value.data ?? []);
+    if (meRes.status === "fulfilled") setCurrentUser(meRes.value.data ?? null);
+
+    const failures = [eRes, lRes, aRes, sRes, shRes, meRes].filter((r) => r.status === "rejected");
+    if (failures.length > 0) {
+      const first = failures[0].reason;
+      setLoadError(axios.isAxiosError(first) && first.response?.status === 403
         ? "Kein Zugriff (nur Administratoren)."
-        : "Daten konnten nicht geladen werden.");
-    } finally { setBusy(false); }
+        : "Einige Daten konnten nicht geladen werden.");
+    }
+
+    // Fetch approval counts for badge / dashboard widget
+    try {
+      const appRes = await apiClient.get("/admin/approvals/work-sessions");
+      const allA = appRes.data ?? [];
+      setPendingCount(allA.filter((a) => a.status === "pending").length);
+      setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
+      setRejectedCount(allA.filter((a) => a.status === "rejected").length);
+    } catch { /* counts stay at previous value */ }
+    try {
+      const lr = await apiClient.get("/admin/leave-requests?status=pending");
+      setLeavePendingCount((lr.data ?? []).length);
+    } catch {
+      setLeavePendingCount(0);
+    }
+    setBusy(false);
   }, []);
 
   useEffect(() => { refreshAll(); }, [refreshAll]);
+
+  // Auto-Poll: pending count alle 30s aktualisieren (Mitarbeiter checkt aus → Bell zeigt sofort Zahl)
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await apiClient.get("/admin/approvals/work-sessions");
+        const all = res.data ?? [];
+        setPendingCount(all.filter((a) => a.status === "pending").length);
+        setCorrectedCount(all.filter((a) => a.status === "corrected").length);
+        setRejectedCount(all.filter((a) => a.status === "rejected").length);
+      } catch { /* noop */ }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (activeSection === "reports") {
@@ -1015,12 +1049,38 @@ export function AdminDashboard() {
       }
       await apiClient.post(EMPLOYEES_URL, payload);
       setNewEmpName(""); setNewEmpEmail(""); setNewEmpPassword(""); setNewEmpAnnual("");
-      setShowNewEmpForm(false);
       await refreshAll();
     } catch (err) {
       const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
       setEmpFormError(typeof d === "string" ? d : "Anlegen fehlgeschlagen.");
     } finally { setEmpFormBusy(false); }
+  }
+
+  function handleCancelCreateEmployee() {
+    setNewEmpName(""); setNewEmpEmail(""); setNewEmpPassword(""); setNewEmpAnnual("");
+    setEmpFormError(null);
+  }
+
+  async function handleGenerateInviteCode() {
+    setInviteCodeBusy(true); setInviteCodeError(null); setInviteCodeCopied(false);
+    try {
+      const res = await apiClient.post(INVITE_CODES_URL);
+      setInviteCode(res.data.code);
+    } catch (err) {
+      const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      setInviteCodeError(typeof d === "string" ? d : "Code konnte nicht erstellt werden.");
+    } finally { setInviteCodeBusy(false); }
+  }
+
+  async function handleCopyInviteCode() {
+    if (!inviteCode) return;
+    try {
+      await navigator.clipboard.writeText(inviteCode);
+      setInviteCodeCopied(true);
+      setTimeout(() => setInviteCodeCopied(false), 1600);
+    } catch {
+      setInviteCodeError("Kopieren fehlgeschlagen.");
+    }
   }
 
   function handleEditEmployee(emp) {
@@ -1424,19 +1484,20 @@ export function AdminDashboard() {
   // ── Report V2 helpers ─────────────────────────────────────────────────────
   function fmtHours(h) {
     if (h == null) return "—";
-    const sign    = h < 0 ? "-" : "";
-    const abs     = Math.abs(h);
-    const hrs     = Math.floor(abs);
-    const mins    = Math.round((abs - hrs) * 60);
-    return `${sign}${hrs}:${String(mins).padStart(2, "0")} h`;
+    const sign = h < 0 ? "-" : "";
+    const totalSecs = Math.round(Math.abs(h) * 3600);
+    const hrs  = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+    return `${sign}${hrs} h : ${String(mins).padStart(2, "0")} m : ${String(secs).padStart(2, "0")} s`;
   }
   function fmtMinutes(m) {
     if (m == null) return "—";
     const sign = m < 0 ? "-" : "";
     const abs  = Math.abs(m);
     const h    = Math.floor(abs / 60);
-    const min  = abs % 60;
-    return `${sign}${h}:${String(min).padStart(2, "0")} h`;
+    const min  = Math.floor(abs % 60);
+    return `${sign}${h} h : ${String(min).padStart(2, "0")} m : 00 s`;
   }
   function fmtTimeBerlin(isoStr) {
     if (!isoStr) return "—";
@@ -1825,7 +1886,7 @@ export function AdminDashboard() {
       />
 
       <div className="ad-main">
-        <Topbar section={activeSection} user={currentUser} onRefresh={refreshAll} busy={busy} pendingCount={pendingCount} />
+        <Topbar section={activeSection} user={currentUser} onRefresh={refreshAll} busy={busy} pendingCount={pendingCount} onNav={setActiveSection} />
 
         <main className="ad-content">
 
@@ -2071,142 +2132,311 @@ export function AdminDashboard() {
             </div>
           )}
 
-          {activeSection === "employees" && (
-            <div className="ad-section">
-              <SectionTitle
-                title="Mitarbeiter"
-                action={
-                  <button className="ad-btn ad-btn--primary" onClick={() => setShowNewEmpForm(!showNewEmpForm)}>
-                    <span className="ad-btn__icon">{Ico.plus}</span> Neuer Mitarbeiter
+          {activeSection === "employees" && (() => {
+            const empListFiltered = employees.filter((e) =>
+              !empListSearch ||
+              e.name.toLowerCase().includes(empListSearch.toLowerCase()) ||
+              e.email.toLowerCase().includes(empListSearch.toLowerCase())
+            );
+            const selectedEmp = employees.find((e) => e.id === selectedEmpId) ?? null;
+            const selPct = selectedEmp
+              ? Math.min(100, ((selectedEmp.hours_official_month ?? 0) / (selectedEmp.hours_target_month ?? 160)) * 100)
+              : 0;
+            const totalCount = employees.length;
+            const activeCount = employees.filter((e) => e.is_active).length;
+            const inactiveCount = totalCount - activeCount;
+            return (
+              <div className="emp-page">
+                <div className="emp-tabs" role="tablist">
+                  <button
+                    type="button" role="tab" aria-selected={empTab === "manage"}
+                    className={`emp-tabs__btn${empTab === "manage" ? " emp-tabs__btn--active" : ""}`}
+                    onClick={() => setEmpTab("manage")}
+                  >
+                    Mitarbeiter verwalten
                   </button>
-                }
-              />
+                  <button
+                    type="button" role="tab" aria-selected={empTab === "create"}
+                    className={`emp-tabs__btn${empTab === "create" ? " emp-tabs__btn--active" : ""}`}
+                    onClick={() => setEmpTab("create")}
+                  >
+                    Mitarbeiter anlegen
+                  </button>
+                  <button
+                    type="button" role="tab" aria-selected={empTab === "invites"}
+                    className={`emp-tabs__btn${empTab === "invites" ? " emp-tabs__btn--active" : ""}`}
+                    onClick={() => setEmpTab("invites")}
+                  >
+                    Einladungscodes
+                  </button>
+                </div>
 
-              {/* Create form */}
-              {showNewEmpForm && (
-                <Card>
-                  <h3 className="ad-form-title">Neuen Mitarbeiter anlegen</h3>
-                  <form className="ad-form-grid" onSubmit={handleCreateEmployee}>
-                    <div className="ad-field">
-                      <label>Name *</label>
-                      <input className="ad-input" placeholder="Vollständiger Name" value={newEmpName}
-                        onChange={(e) => setNewEmpName(e.target.value)} disabled={empFormBusy} required />
-                    </div>
-                    <div className="ad-field">
-                      <label>E-Mail *</label>
-                      <input className="ad-input" type="email" placeholder="name@firma.de" value={newEmpEmail}
-                        onChange={(e) => setNewEmpEmail(e.target.value)} disabled={empFormBusy} required />
-                    </div>
-                    <div className="ad-field">
-                      <label>Passwort *</label>
-                      <input className="ad-input" type="password" placeholder="mind. 8 Zeichen" value={newEmpPassword}
-                        onChange={(e) => setNewEmpPassword(e.target.value)} disabled={empFormBusy} minLength={8} required />
-                    </div>
-                    <div className="ad-field">
-                      <label>Urlaubstage / Jahr</label>
-                      <input
-                        className="ad-input"
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="Leer = System-Standard (siehe .env DEFAULT_ANNUAL_LEAVE_DAYS)"
-                        value={newEmpAnnual}
-                        onChange={(e) => setNewEmpAnnual(e.target.value)}
-                        disabled={empFormBusy}
-                      />
-                    </div>
-                    <div className="ad-field ad-field--actions">
-                      <button type="submit" className="ad-btn ad-btn--primary" disabled={empFormBusy}>
-                        {empFormBusy ? "Wird angelegt…" : "Anlegen"}
-                      </button>
-                      <button type="button" className="ad-btn ad-btn--ghost" onClick={() => setShowNewEmpForm(false)}>
-                        Abbrechen
-                      </button>
-                    </div>
-                  </form>
-                  {empFormError && <p className="ad-alert">{empFormError}</p>}
-                </Card>
-              )}
+                {empTab === "manage" && (
+                  <div className="emp-layout">
+                    {/* ── LEFT: 380px list ─────────────────────────────────── */}
+                    <div className="emp-list-panel">
+                      <div className="emp-stats-row">
+                        <div className="emp-stat-card emp-stat-card--dark">
+                          <div className="emp-stat-card__value">{totalCount}</div>
+                          <div className="emp-stat-card__label">Gesamt</div>
+                        </div>
+                        <div className="emp-stat-card">
+                          <div className="emp-stat-card__value emp-stat-card__value--active">{activeCount}</div>
+                          <div className="emp-stat-card__label">Aktiv</div>
+                        </div>
+                        <div className="emp-stat-card">
+                          <div className="emp-stat-card__value emp-stat-card__value--inactive">{inactiveCount}</div>
+                          <div className="emp-stat-card__label">Inaktiv</div>
+                        </div>
+                      </div>
 
-              {/* Table */}
-              <Card>
-                <div className="ad-table-wrap">
-                  <table className="ad-table">
-                    <thead>
-                      <tr>
-                        <th>Mitarbeiter</th>
-                        <th>Telefon</th>
-                        <th>Rolle</th>
-                        <th>Standort</th>
-                        <th>Status</th>
-                        <th>Urlaub übrig</th>
-                        <th>Aktionen</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {employees.length === 0
-                        ? <tr><td colSpan={7} className="ad-empty">Keine Mitarbeiter.</td></tr>
-                        : employees.map((row) => (
-                          <tr key={row.id} className={!row.is_active ? "ad-table__row--muted" : ""}>
-                            <td>
-                              <div className="ad-user-cell">
-                                <span className="ad-user-cell__avatar">{row.name[0].toUpperCase()}</span>
-                                <div>
-                                  <strong>{row.name}</strong>
-                                  <br /><small>{row.email}</small>
+                      <div className="emp-list-panel__top">
+                        <div className="emp-list-panel__search-wrap">
+                          <svg className="emp-list-panel__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                          <input
+                            className="emp-list-panel__search"
+                            placeholder="Suche…"
+                            value={empListSearch}
+                            onChange={(e) => setEmpListSearch(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="emp-list-card">
+                        <div className="emp-list-card__header">
+                          <span className="emp-list-card__title">ALLE MITARBEITER</span>
+                          <span className="emp-list-card__count-badge">{empListFiltered.length}</span>
+                        </div>
+                        <div className="emp-list-panel__list">
+                          {empListFiltered.length === 0 && (
+                            <div className="emp-list-panel__empty">Keine Mitarbeiter gefunden.</div>
+                          )}
+                          {empListFiltered.map((row) => (
+                            <div
+                              key={row.id}
+                              className={`emp-list-row${selectedEmpId === row.id ? " emp-list-row--active" : ""}${!row.is_active ? " emp-list-row--muted" : ""}`}
+                              onClick={() => setSelectedEmpId(row.id)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => e.key === "Enter" && setSelectedEmpId(row.id)}
+                            >
+                              <div className="emp-list-row__avatar" style={{ background: avatarColorForName(row.name) }}>
+                                {row.name?.[0]?.toUpperCase() ?? "?"}
+                              </div>
+                              <div className="emp-list-row__info">
+                                <div className="emp-list-row__name">{row.name}</div>
+                                <div className="emp-list-row__email">{row.email}</div>
+                              </div>
+                              <span
+                                className={`emp-list-row__status-dot${row.is_active ? " emp-list-row__status-dot--active" : " emp-list-row__status-dot--inactive"}`}
+                                title={row.is_active ? "Aktiv" : "Inaktiv"}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── RIGHT: Side panel ─────────────────────────────────── */}
+                    <div className="emp-side-panel">
+                      {!selectedEmp ? (
+                        <div className="emp-side-panel__empty">
+                          <svg className="emp-side-panel__empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                          <div className="emp-side-panel__empty-text">Mitarbeiter auswählen</div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="emp-side-panel__header">
+                            <div className="emp-side-panel__header-top">
+                              <span className="emp-side-panel__kicker">MITARBEITER-PROFIL</span>
+                              <span className={`emp-side-panel__badge${selectedEmp.is_active ? " emp-side-panel__badge--active" : " emp-side-panel__badge--inactive"}`}>
+                                {selectedEmp.is_active ? "Aktiv" : "Inaktiv"}
+                              </span>
+                            </div>
+                            <div className="emp-side-panel__name">{selectedEmp.name}</div>
+                            <div className="emp-side-panel__sub">{selectedEmp.role === "admin" ? "Administrator" : "Mitarbeiter"} · {selectedEmp.email}</div>
+                          </div>
+                          <div className="emp-side-panel__avatar" style={{ background: avatarColorForName(selectedEmp.name) }}>
+                            {selectedEmp.name?.[0]?.toUpperCase() ?? "?"}
+                          </div>
+
+                          <div className="emp-side-panel__body">
+                            <div className="emp-side-panel__section-title">ÜBERSICHT</div>
+                            <div className="emp-side-panel__info-grid">
+                              <div className="emp-side-panel__info-card">
+                                <div className="emp-side-panel__info-label">Telefon</div>
+                                <div className="emp-side-panel__info-value">{selectedEmp.phone || "—"}</div>
+                              </div>
+                              <div className="emp-side-panel__info-card">
+                                <div className="emp-side-panel__info-label">Rolle</div>
+                                <div className="emp-side-panel__info-value">{selectedEmp.role === "admin" ? "Administrator" : "Mitarbeiter"}</div>
+                              </div>
+                              <div className="emp-side-panel__info-card emp-side-panel__info-card--wide">
+                                <div className="emp-side-panel__info-label">Monatsstunden (Ist / Soll)</div>
+                                <div className="emp-side-panel__info-value">
+                                  {fmtHours(selectedEmp.hours_official_month ?? 0)}
+                                  <span className="emp-side-panel__info-target"> / {selectedEmp.hours_target_month ?? 160} h</span>
+                                </div>
+                                <div className="emp-side-panel__progress">
+                                  <div className="emp-side-panel__progress-fill" style={{ width: `${selPct}%` }} />
                                 </div>
                               </div>
-                            </td>
-                            <td>{row.phone || "—"}</td>
-                            <td><Badge type={row.role} /></td>
-                            <td>{locationNames(row.assigned_location_ids)}</td>
-                            <td><Badge type={row.is_active ? "active" : "inactive"} /></td>
-                            <AdminEmployeeLeaveMeterCell row={row} />
-                            <td>
-                              <div className="ad-actions ad-actions--emp">
-                                <button
-                                  type="button"
-                                  className="ad-btn ad-btn--sm ad-btn--hours"
-                                  onClick={() => openHoursModal(row)}
-                                  title="Arbeitszeit diesen Monat"
-                                >
-                                  {(row.hours_official_month ?? 0).toFixed(1).replace(/\.0$/, "")}/{row.hours_target_month ?? 160}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ad-btn ad-btn--sm ad-btn--urlaub"
-                                  onClick={() => openEmployeeLeaveModal(row)}
-                                  title="Urlaubstage und Kontingent"
-                                >
-                                  Urlaub
-                                </button>
-                                <button type="button" className="ad-btn ad-btn--sm ad-btn--ghost" onClick={() => handleEditEmployee(row)}>Bearbeiten</button>
-                                {row.is_active ? (
-                                  <button
-                                    type="button"
-                                    className="ad-btn ad-btn--sm ad-btn--danger"
-                                    onClick={() => setEmpDeactivateModal(row)}
-                                  >
-                                    Löschen
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="ad-btn ad-btn--sm ad-btn--success"
-                                    onClick={() => handleActivateEmployee(row)}
-                                  >
-                                    Aktivieren
-                                  </button>
-                                )}
+                              <div className="emp-side-panel__info-card">
+                                <div className="emp-side-panel__info-label">Urlaub übrig</div>
+                                <div className="emp-side-panel__info-value">{selectedEmp.leave_remaining ?? "—"} Tage</div>
                               </div>
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            </div>
-          )}
+                            </div>
+
+                            <div className="emp-side-panel__section-title">STANDORTE</div>
+                            <div className="emp-side-panel__loc-tags">
+                              {(selectedEmp.assigned_location_ids?.length > 0)
+                                ? selectedEmp.assigned_location_ids.map((lid) => {
+                                    const loc = locations.find((l) => l.id === lid);
+                                    return loc
+                                      ? <span key={lid} className="emp-side-panel__loc-tag">{loc.name}</span>
+                                      : null;
+                                  })
+                                : <span className="emp-side-panel__loc-none">Kein Standort zugewiesen</span>
+                              }
+                            </div>
+                          </div>
+
+                          <div className="emp-side-panel__footer">
+                            <button
+                              type="button"
+                              className="emp-side-panel__action-btn"
+                              onClick={() => handleEditEmployee(selectedEmp)}
+                            >
+                              Bearbeiten
+                            </button>
+                            <button
+                              type="button"
+                              className="emp-side-panel__action-btn"
+                              onClick={() => openHoursModal(selectedEmp)}
+                            >
+                              Zeiten
+                            </button>
+                            <button
+                              type="button"
+                              className="emp-side-panel__action-btn"
+                              onClick={() => openEmployeeLeaveModal(selectedEmp)}
+                            >
+                              Urlaub
+                            </button>
+                            {selectedEmp.is_active ? (
+                              <button
+                                type="button"
+                                className="emp-side-panel__action-btn emp-side-panel__action-btn--danger"
+                                onClick={() => setEmpDeactivateModal(selectedEmp)}
+                              >
+                                Löschen
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="emp-side-panel__action-btn emp-side-panel__action-btn--success"
+                                onClick={() => handleActivateEmployee(selectedEmp)}
+                              >
+                                Aktivieren
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {empTab === "create" && (
+                  <div className="emp-create-tab">
+                    <div className="emp-create-tab__card">
+                      <h3 className="emp-create-tab__title">
+                        <span className="emp-create-tab__accent">Neuen</span> Mitarbeiter anlegen
+                      </h3>
+                      <form onSubmit={handleCreateEmployee}>
+                        <div className="emp-create-form__field">
+                          <label className="emp-create-form__label">Name *</label>
+                          <input className="emp-create-form__input" placeholder="Vollständiger Name" value={newEmpName}
+                            onChange={(e) => setNewEmpName(e.target.value)} disabled={empFormBusy} required />
+                        </div>
+                        <div className="emp-create-form__field">
+                          <label className="emp-create-form__label">E-Mail *</label>
+                          <input className="emp-create-form__input" type="email" placeholder="name@firma.de" value={newEmpEmail}
+                            onChange={(e) => setNewEmpEmail(e.target.value)} disabled={empFormBusy} required />
+                        </div>
+                        <div className="emp-create-form__field">
+                          <label className="emp-create-form__label">Passwort *</label>
+                          <input className="emp-create-form__input" type="password" placeholder="mind. 8 Zeichen" value={newEmpPassword}
+                            onChange={(e) => setNewEmpPassword(e.target.value)} disabled={empFormBusy} minLength={8} required />
+                        </div>
+                        <div className="emp-create-form__field">
+                          <label className="emp-create-form__label">Urlaubstage / Jahr</label>
+                          <input className="emp-create-form__input" type="text" inputMode="numeric"
+                            placeholder="Leer = Standard" value={newEmpAnnual}
+                            onChange={(e) => setNewEmpAnnual(e.target.value)} disabled={empFormBusy} />
+                        </div>
+                        <div className="emp-create-form__actions">
+                          <button type="submit" className="emp-create-form__btn emp-create-form__btn--primary" disabled={empFormBusy}>
+                            {empFormBusy ? "Wird angelegt…" : "Anlegen"}
+                          </button>
+                          <button type="button" className="emp-create-form__btn emp-create-form__btn--ghost" onClick={handleCancelCreateEmployee}>
+                            Abbrechen
+                          </button>
+                        </div>
+                      </form>
+                      {empFormError && <p className="emp-create-form__error">{empFormError}</p>}
+                    </div>
+                  </div>
+                )}
+
+                {empTab === "invites" && (
+                  <div className="emp-invite-tab">
+                    <div className="emp-invite-tab__card">
+                      <div className="emp-invite-tab__icon-box">🔑</div>
+                      <h3 className="emp-invite-tab__title">Einladungscode erstellen</h3>
+                      <p className="emp-invite-tab__lede">
+                        Generiere einen einmaligen Code und gib ihn an einen neuen
+                        Mitarbeiter weiter, damit dieser sich selbst registrieren kann.
+                      </p>
+
+                      {!inviteCode ? (
+                        <button
+                          type="button"
+                          className="emp-invite-tab__btn emp-invite-tab__btn--primary"
+                          onClick={handleGenerateInviteCode}
+                          disabled={inviteCodeBusy}
+                        >
+                          {inviteCodeBusy ? "Wird erstellt…" : "+ Code generieren"}
+                        </button>
+                      ) : (
+                        <>
+                          <div className="emp-invite-tab__code-box">{inviteCode}</div>
+                          <div className="emp-invite-tab__actions">
+                            <button
+                              type="button"
+                              className={`emp-invite-tab__btn emp-invite-tab__btn--copy${inviteCodeCopied ? " emp-invite-tab__btn--copied" : ""}`}
+                              onClick={handleCopyInviteCode}
+                            >
+                              {inviteCodeCopied ? "✓ Kopiert" : "Code kopieren"}
+                            </button>
+                            <button
+                              type="button"
+                              className="emp-invite-tab__btn emp-invite-tab__btn--ghost"
+                              onClick={handleGenerateInviteCode}
+                              disabled={inviteCodeBusy}
+                            >
+                              Neuer Code
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {inviteCodeError && <p className="emp-invite-tab__error">{inviteCodeError}</p>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ═══════════ ATTENDANCE ═══════════════════════════════════════ */}
           {activeSection === "attendance" && (
@@ -2664,7 +2894,7 @@ export function AdminDashboard() {
                               <CartesianGrid strokeDasharray="3 3" stroke="#e6ebf2" />
                               <XAxis dataKey="period_label" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} />
                               <YAxis tick={{ fontSize: 11 }} unit="h" />
-                              <Tooltip formatter={(v, n) => [`${v}h`, n === "official_hours" ? "Offiziell" : "Ausstehend"]} />
+                              <Tooltip formatter={(v, n) => [fmtHours(v), n === "official_hours" ? "Offiziell" : "Ausstehend"]} />
                               <Legend formatter={(v) => v === "official_hours" ? "Offizielle Stunden" : "Ausstehend"} />
                               <Line type="monotone" dataKey="official_hours" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                               <Line type="monotone" dataKey="pending_hours" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="5 3" />
@@ -3269,8 +3499,7 @@ export function AdminDashboard() {
                               <td className="ad-mono">{formatTime(session.checkin_time)}</td>
                               <td className="ad-mono">{session.checkout_time ? formatTime(session.checkout_time) : "—"}</td>
                               <td>
-                                <strong>{(session.duration_seconds / 3600).toFixed(2)}h</strong>
-                                {" "}<small className="ad-muted">({formatSeconds(session.duration_seconds)})</small>
+                                <strong>{formatSeconds(session.duration_seconds)}</strong>
                               </td>
                               <td><ApprovalBadge status={session.status} /></td>
                               <td>
@@ -3809,19 +4038,19 @@ export function AdminDashboard() {
                 </div>
                 <div className="ad-hours-kpi">
                   <span className="ad-hours-kpi__label">Genehmigt + korrigiert</span>
-                  <strong className="ad-hours-kpi__val">{(hoursModalRow.hours_official_month ?? 0).toFixed(2)} h</strong>
+                  <strong className="ad-hours-kpi__val">{fmtHours(hoursModalRow.hours_official_month ?? 0)}</strong>
                 </div>
                 <div className="ad-hours-kpi">
                   <span className="ad-hours-kpi__label">Ausstehend (Monat)</span>
-                  <strong className="ad-hours-kpi__val">{(hoursModalRow.hours_pending_month ?? 0).toFixed(2)} h</strong>
+                  <strong className="ad-hours-kpi__val">{fmtHours(hoursModalRow.hours_pending_month ?? 0)}</strong>
                 </div>
                 <div className={`ad-hours-kpi ad-hours-kpi--${(hoursModalRow.hours_diff_month ?? 0) > 0 ? "over" : (hoursModalRow.hours_diff_month ?? 0) < 0 ? "under" : "ok"}`}>
                   <span className="ad-hours-kpi__label">Abweichung</span>
                   <strong className="ad-hours-kpi__val">
                     {(hoursModalRow.hours_diff_month ?? 0) > 0
-                      ? `+${(hoursModalRow.hours_diff_month ?? 0).toFixed(2)} h über Soll`
+                      ? `+${fmtHours(hoursModalRow.hours_diff_month ?? 0)} über Soll`
                       : (hoursModalRow.hours_diff_month ?? 0) < 0
-                        ? `${(hoursModalRow.hours_diff_month ?? 0).toFixed(2)} h unter Soll`
+                        ? `${fmtHours(hoursModalRow.hours_diff_month ?? 0)} unter Soll`
                         : "0 h — im Soll"}
                   </strong>
                 </div>
@@ -3853,7 +4082,7 @@ export function AdminDashboard() {
                         <tr key={s.id}>
                           <td className="ad-mono">{formatTime(s.checkin_time)}</td>
                           <td className="ad-mono">{s.checkout_time ? formatTime(s.checkout_time) : "—"}</td>
-                          <td>{(s.duration_seconds / 3600).toFixed(2)}</td>
+                          <td>{formatSeconds(s.duration_seconds)}</td>
                           <td><ApprovalBadge status={s.status} /></td>
                         </tr>
                       ))}
@@ -3972,7 +4201,7 @@ export function AdminDashboard() {
                 </svg>
               </button>
               <div className="ad-emp-edit__hero-inner">
-                <div className="ad-emp-edit__avatar" aria-hidden>
+                <div className="ad-emp-edit__avatar" aria-hidden style={{ background: avatarColorForName(empEditEmp.name) }}>
                   {empEditEmp.name?.[0] ? empEditEmp.name[0].toUpperCase() : "?"}
                 </div>
                 <div className="ad-emp-edit__hero-text">
@@ -4164,9 +4393,11 @@ export function AdminDashboard() {
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 function formatSeconds(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  return `${h}h ${String(m).padStart(2, "0")}m`;
+  const s = Math.max(0, Math.floor(Number(secs) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${h} h : ${String(m).padStart(2, "0")} m : ${String(sec).padStart(2, "0")} s`;
 }
 function formatTime(iso) {
   if (!iso) return "—";

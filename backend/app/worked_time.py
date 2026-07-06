@@ -71,4 +71,5 @@ def compute_worked_time_payload(db: Session, employee_id: int) -> dict[str, Any]
         "total_hours": total_hours,
         "active": active,
         "sessions": sessions_out,
+        "active_checkin_at": pending_checkin_at if active else None,
     }

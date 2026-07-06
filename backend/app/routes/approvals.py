@@ -51,6 +51,20 @@ def _ensure_utc(dt: datetime) -> datetime:
 def _build_response(session: WorkSession, db: Session) -> WorkSessionResponse:
     emp      = db.get(Employee, session.employee_id)
     approver = db.get(Employee, session.approved_by_id) if session.approved_by_id else None
+
+    # Original-Stempelzeiten aus attendance_logs laden (nur bei korrigierten Sessions)
+    original_checkin_time  = None
+    original_checkout_time = None
+    if session.status == "corrected":
+        if session.checkin_log_id:
+            att_in = db.get(Attendance, session.checkin_log_id)
+            if att_in:
+                original_checkin_time = att_in.created_at
+        if session.checkout_log_id:
+            att_out = db.get(Attendance, session.checkout_log_id)
+            if att_out:
+                original_checkout_time = att_out.created_at
+
     return WorkSessionResponse(
         id=session.id,
         employee_id=session.employee_id,
@@ -66,6 +80,8 @@ def _build_response(session: WorkSession, db: Session) -> WorkSessionResponse:
         approved_at=session.approved_at,
         rejection_reason=session.rejection_reason,
         admin_note=session.admin_note,
+        original_checkin_time=original_checkin_time,
+        original_checkout_time=original_checkout_time,
         created_at=session.created_at,
         updated_at=session.updated_at,
     )

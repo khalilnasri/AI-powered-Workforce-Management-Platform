@@ -106,6 +106,8 @@ def get_employee_month_ws_stats(db: Session, employee_id: int) -> dict[str, floa
     return {
         "official_hours": round(off_sec / 3600, 2),
         "pending_hours": round(pend_sec / 3600, 2),
+        "official_seconds": off_sec,
+        "pending_seconds": pend_sec,
     }
 
 

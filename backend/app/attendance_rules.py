@@ -32,12 +32,15 @@ def build_attendance_status(db: Session, employee_id: int) -> AttendanceStatusRe
 
     message = _explain_status(last_type=last_type, lifecycle=lifecycle)
 
+    active_checkin_at = latest.created_at if lifecycle == "checked_in" and latest else None
+
     return AttendanceStatusResponse(
         status=lifecycle,
         last_type=last_type,
         can_checkin=can_checkin,
         can_checkout=can_checkout,
         message=message,
+        active_checkin_at=active_checkin_at,
     )
 
 

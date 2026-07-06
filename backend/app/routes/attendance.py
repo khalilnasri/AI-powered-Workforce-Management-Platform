@@ -44,6 +44,56 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
+def _auto_assign_location(
+    db: Session,
+    employee: Employee,
+    lat: float,
+    lng: float,
+) -> None:
+    """
+    Erkennt beim ersten Check-in automatisch den Standort anhand der GPS-Koordinaten
+    und speichert ihn in employee_work_locations — nur wenn noch keine Zuweisung vorhanden.
+    Fehler werden geloggt aber nicht weitergegeben (Check-in soll nie daran scheitern).
+    """
+    try:
+        # Prüfen ob bereits eine Zuweisung existiert (M2M oder legacy)
+        has_m2m = db.scalars(
+            select(EmployeeWorkLocation)
+            .where(EmployeeWorkLocation.employee_id == employee.id)
+            .limit(1)
+        ).first()
+        if has_m2m or employee.assigned_location_id:
+            return  # Bereits zugewiesen → nichts tun
+
+        # Alle Standorte laden und GPS-Treffer suchen (nächster innerhalb Radius)
+        all_locs = db.scalars(select(WorkplaceLocation)).all()
+        best_loc = None
+        best_dist = float("inf")
+        for loc in all_locs:
+            dist = haversine_meters(lat, lng, loc.lat, loc.lng)
+            if dist <= float(loc.radius_meters) and dist < best_dist:
+                best_dist = dist
+                best_loc = loc
+
+        if best_loc is None:
+            return  # GPS liegt in keinem Standort → keine Zuweisung
+
+        # Zuweisung speichern
+        new_assignment = EmployeeWorkLocation(
+            employee_id=employee.id,
+            location_id=best_loc.id,
+        )
+        db.add(new_assignment)
+        db.commit()
+        logger.info(
+            "Auto-Zuweisung: Mitarbeiter %s (%d) → Standort '%s' (%d), Distanz %.0f m",
+            employee.name, employee.id, best_loc.name, best_loc.id, best_dist,
+        )
+    except Exception:
+        db.rollback()
+        logger.warning("Auto-Zuweisung fehlgeschlagen für Mitarbeiter %d", employee.id, exc_info=True)
+
+
 def _check_location_assignment(
     db: Session,
     lat: float,
@@ -112,6 +162,8 @@ def worked_time_summary(
         month_target_hours=month_target,
         official_hours_month=month_ws["official_hours"],
         pending_hours_month=month_ws["pending_hours"],
+        official_seconds_month=month_ws["official_seconds"],
+        pending_seconds_month=month_ws["pending_seconds"],
     )
 
 
@@ -151,8 +203,31 @@ def my_sessions(
         .order_by(WorkSession.checkin_time.desc())
         .limit(50)
     ).all()
-    return [
-        WorkSessionResponse(
+
+    # Original-Attendance-Logs für korrigierte Sessions in einer Abfrage laden
+    att_log_ids: list[int] = []
+    for s in sessions:
+        if s.status == "corrected":
+            if s.checkin_log_id:
+                att_log_ids.append(s.checkin_log_id)
+            if s.checkout_log_id:
+                att_log_ids.append(s.checkout_log_id)
+    att_map: dict[int, Attendance] = {}
+    if att_log_ids:
+        for att in db.scalars(select(Attendance).where(Attendance.id.in_(att_log_ids))).all():
+            att_map[att.id] = att
+
+    result = []
+    for s in sessions:
+        original_checkin_time  = None
+        original_checkout_time = None
+        if s.status == "corrected":
+            if s.checkin_log_id and s.checkin_log_id in att_map:
+                original_checkin_time = att_map[s.checkin_log_id].created_at
+            if s.checkout_log_id and s.checkout_log_id in att_map:
+                original_checkout_time = att_map[s.checkout_log_id].created_at
+
+        result.append(WorkSessionResponse(
             id=s.id,
             employee_id=s.employee_id,
             checkin_log_id=s.checkin_log_id,
@@ -165,11 +240,12 @@ def my_sessions(
             approved_at=s.approved_at,
             rejection_reason=s.rejection_reason,
             admin_note=s.admin_note,
+            original_checkin_time=original_checkin_time,
+            original_checkout_time=original_checkout_time,
             created_at=s.created_at,
             updated_at=s.updated_at,
-        )
-        for s in sessions
-    ]
+        ))
+    return result
 
 
 @router.post("/checkin", response_model=CheckInResponse)
@@ -203,6 +279,9 @@ def check_in(
         db.rollback()
         raise
 
+    # Auto-Zuweisung: Hat Mitarbeiter noch keinen Standort → GPS-Treffer speichern
+    _auto_assign_location(db, current_employee, body.lat, body.lng)
+
     return CheckInResponse(
         status="success",
         message="Check-in received",
@@ -222,6 +301,10 @@ def check_out(
     blocked = geofence_block_response(db, body.lat, body.lng, current_employee)
     if blocked is not None:
         return blocked
+
+    assignment_blocked = _check_location_assignment(db, body.lat, body.lng, current_employee)
+    if assignment_blocked is not None:
+        return assignment_blocked
 
     denied_checkout = validate_checkout_allowed(db, current_employee.id)
     if denied_checkout is not None:

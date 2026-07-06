@@ -7,11 +7,45 @@ from sqlalchemy.orm import Session
 from app.auth.deps import get_current_employee
 from app.config.database import get_db
 from app.models.employee import Employee
+from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.leave_request import LeaveRequest
+from app.models.location import WorkplaceLocation
 from app.schemas.leave import LeaveRequestCreate, LeaveRequestOut, LeaveSummaryOut
 from app.services.leave_service import can_request_leave_days, inclusive_days, leave_balance_for_employee
 
 router = APIRouter(prefix="/employee", tags=["employee"])
+
+
+@router.get("/my-location")
+def get_my_assigned_location(
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db),
+):
+    # Priorität 1: M2M-Standorte (neueres System)
+    loc = db.scalars(
+        select(WorkplaceLocation)
+        .join(EmployeeWorkLocation, EmployeeWorkLocation.location_id == WorkplaceLocation.id)
+        .where(EmployeeWorkLocation.employee_id == current_employee.id)
+        .order_by(WorkplaceLocation.id)
+        .limit(1)
+    ).first()
+
+    # Priorität 2: Legacy assigned_location_id
+    if loc is None and current_employee.assigned_location_id:
+        loc = db.get(WorkplaceLocation, current_employee.assigned_location_id)
+
+    if not loc:
+        return {"location": None}
+
+    return {
+        "location": {
+            "id": loc.id,
+            "name": loc.name,
+            "lat": loc.lat,
+            "lng": loc.lng,
+            "radius_meters": loc.radius_meters,
+        }
+    }
 
 
 @router.get("/dashboard")

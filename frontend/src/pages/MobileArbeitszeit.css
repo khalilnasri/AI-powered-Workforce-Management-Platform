@@ -1,0 +1,425 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Arbeitszeit Screen — editorial-minimal
+   Warm cream paper · near-black ink · one vermillion accent
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Design tokens ─────────────────────────────────────────────────── */
+:root {
+  --az-paper:      #F0EADD;
+  --az-card:       #F8F4EB;
+  --az-border:     #E2DAC7;
+  --az-ink:        #1A1612;
+  --az-ink-on-dk:  #F0EADD;
+  --az-accent:     #E0431D;
+
+  --az-amber-s:    #C8841E;   /* stripe */
+  --az-amber-card: #FBF3DE;
+  --az-amber-bdr:  #EBD9AE;
+  --az-amber-chip: #F4E4BC;
+  --az-amber-txt:  #9A6A14;
+  --az-amber-val:  #E8B24A;
+
+  --az-blue:       #3E6E8E;
+  --az-blue-chip:  #E4ECF1;
+
+  --az-green:      #4E7C50;
+  --az-green-chip: #E7EFE3;
+
+  --az-mute-1: #9A917D;
+  --az-mute-2: #A0977F;
+  --az-mute-3: #A89F89;
+  --az-mute-4: #A89A82;
+  --az-mute-5: #8E826C;
+  --az-mute-6: #A89065;
+  --az-note-bg: #EFEADC;
+  --az-note-tx: #7C745F;
+}
+
+/* ── Screen container ──────────────────────────────────────────────── */
+.az-screen {
+  background: var(--az-paper);
+  min-height: calc(100dvh - 64px);
+  padding-bottom: 80px;
+  overflow-x: hidden;
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+.az-header {
+  padding: 22px 24px 0;
+}
+.az-header__eyebrow {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--az-mute-1);
+  margin-bottom: 5px;
+}
+.az-header__title {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-weight: 400;
+  font-size: 40px;
+  line-height: 1.05;
+  color: var(--az-ink);
+  margin: 0 0 22px;
+}
+
+/* ── Dark official banner ─────────────────────────────────────────── */
+.az-banner {
+  margin: 0 16px 14px;
+  background: var(--az-ink);
+  border-radius: 24px;
+  padding: 22px;
+  color: var(--az-ink-on-dk);
+}
+.az-banner__eyebrow {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--az-mute-4);
+  margin-bottom: 6px;
+}
+.az-banner__total {
+  margin-bottom: 4px;
+  line-height: 1;
+}
+.az-banner__sub {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 11.5px;
+  color: var(--az-mute-5);
+  margin-bottom: 16px;
+}
+.az-banner__divider {
+  height: 1px;
+  background: rgba(240, 234, 221, .14);
+  margin: 0 -22px 16px;
+}
+.az-banner__footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+.az-banner__pending-label {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--az-mute-4);
+  margin-bottom: 3px;
+}
+.az-banner__caption {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 10.5px;
+  color: var(--az-mute-5);
+  text-align: right;
+  flex-shrink: 0;
+  max-width: 110px;
+  line-height: 1.4;
+}
+
+/* ── HMS display ─────────────────────────────────────────────────── */
+.az-hms {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+.az-hms--big {
+  font-size: 40px;
+}
+.az-hms--big .az-hms__u {
+  font-size: 22px;
+  color: var(--az-mute-5);
+}
+.az-hms--sm {
+  font-size: 18px;
+  color: var(--az-amber-val);
+}
+.az-hms--sm .az-hms__u {
+  font-size: 13px;
+  color: var(--az-amber-val);
+  opacity: 0.75;
+}
+.az-hms--neutral {
+  font-size: 18px;
+  color: var(--az-ink);
+}
+.az-hms--neutral .az-hms__u {
+  font-size: 13px;
+  color: var(--az-mute-3);
+  opacity: 0.85;
+}
+
+/* ── Metric tiles ─────────────────────────────────────────────────── */
+.az-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 16px 26px;
+}
+.az-tile {
+  background: var(--az-card);
+  border: 1px solid var(--az-border);
+  border-radius: 20px;
+  padding: 16px 18px;
+}
+.az-tile__num {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 30px;
+  color: var(--az-ink);
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.az-tile__label {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 9.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--az-mute-2);
+}
+
+/* ── Section header ───────────────────────────────────────────────── */
+.az-section {
+  margin: 0 16px 26px;
+}
+.az-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.az-section-header__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.az-section-header__dot--amber { background: var(--az-amber-s); }
+.az-section-header__dot--green { background: var(--az-green); }
+.az-section-header__title {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--az-ink);
+  white-space: nowrap;
+}
+.az-section-header__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--az-border);
+}
+.az-section-header__total {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-size: 10.5px;
+  color: var(--az-mute-3);
+  white-space: nowrap;
+}
+
+/* ── Shift cards ─────────────────────────────────────────────────── */
+.az-card {
+  border-radius: 22px;
+  border-width: 1px;
+  border-style: solid;
+  padding: 0;
+  margin-bottom: 14px;
+  overflow: hidden;
+  position: relative;
+}
+/* 4-px left accent stripe */
+.az-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 22px 0 0 22px;
+}
+.az-card--pending {
+  background: var(--az-amber-card);
+  border-color: var(--az-amber-bdr);
+}
+.az-card--pending::before { background: var(--az-amber-s); }
+
+.az-card--approved {
+  background: var(--az-card);
+  border-color: var(--az-border);
+}
+.az-card--approved::before { background: var(--az-green); }
+
+.az-card--corrected {
+  background: var(--az-card);
+  border-color: var(--az-border);
+}
+.az-card--corrected::before { background: var(--az-blue); }
+
+.az-card--rejected {
+  background: #FEF2F2;
+  border-color: #FECACA;
+}
+.az-card--rejected::before { background: #DC2626; }
+
+.az-card__inner {
+  padding: 16px 16px 16px 22px; /* left pad > stripe */
+}
+
+/* top row: date + chip */
+.az-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.az-card__date {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--az-ink);
+}
+.az-card__chip {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 100px;
+  white-space: nowrap;
+}
+.az-card__chip--pending   { background: var(--az-amber-chip); color: var(--az-amber-txt);  }
+.az-card__chip--approved  { background: var(--az-green-chip); color: var(--az-green);      }
+.az-card__chip--corrected { background: var(--az-blue-chip);  color: var(--az-blue);       }
+.az-card__chip--rejected  { background: #FEE2E2;              color: #991B1B;              }
+
+/* times row */
+.az-card__times {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+}
+.az-card__time-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.az-card__time-label {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--az-mute-6);
+}
+.az-card--approved .az-card__time-label,
+.az-card--corrected .az-card__time-label { color: var(--az-mute-3); }
+
+.az-card__time-val {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--az-ink);
+  line-height: 1;
+}
+.az-card__arrow {
+  font-size: 14px;
+  color: var(--az-mute-3);
+  margin: 0 10px;
+  padding-top: 12px;
+  align-self: center;
+}
+.az-card__dur-block {
+  margin-left: auto;
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.az-card__dur-label {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--az-mute-6);
+}
+.az-card--approved .az-card__dur-label,
+.az-card--corrected .az-card__dur-label { color: var(--az-mute-3); }
+
+/* ── Original times note (corrected only) ────────────────────────── */
+.az-card__orig {
+  margin-top: 12px;
+  background: var(--az-note-bg);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 11px;
+  color: var(--az-note-tx);
+  line-height: 1.45;
+}
+.az-card__orig strong {
+  font-weight: 700;
+}
+.az-card__orig-times {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-size: 11px;
+}
+
+/* ── Admin note ──────────────────────────────────────────────────── */
+.az-card__note {
+  margin-top: 10px;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 11px;
+  color: var(--az-note-tx);
+  background: var(--az-note-bg);
+  border-radius: 10px;
+  padding: 7px 10px;
+  line-height: 1.4;
+}
+.az-card__note--red {
+  background: #FEF2F2;
+  color: #991B1B;
+}
+
+/* ── Warning hint (>12h pending) ─────────────────────────────────── */
+.az-card__warn {
+  margin-top: 10px;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 11px;
+  color: var(--az-amber-txt);
+  background: var(--az-amber-chip);
+  border-radius: 10px;
+  padding: 7px 10px;
+  line-height: 1.4;
+}
+
+/* ── Footer caption ──────────────────────────────────────────────── */
+.az-footer {
+  margin: 8px auto 0;
+  padding: 0 24px;
+  max-width: 280px;
+  text-align: center;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 10.5px;
+  color: var(--az-mute-3);
+  line-height: 1.55;
+  display: block;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────── */
+.az-empty {
+  text-align: center;
+  padding: 24px 0;
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--az-mute-1);
+}

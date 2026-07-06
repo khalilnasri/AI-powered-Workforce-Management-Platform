@@ -1,17 +1,22 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+    email: str = Field(..., min_length=1, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class RegisterRequest(BaseModel):
-    """Role is assigned by the server (first user = admin, all later = employee)."""
+    """Role is assigned by the server (first user = admin, all later = employee).
+
+    ``invite_code`` is required for every registration except the very first
+    (bootstrap admin) account — enforced server-side in the route handler.
+    """
 
     name: str = Field(..., min_length=1, max_length=255)
-    email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
+    email: str = Field(..., min_length=1, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+    invite_code: str | None = Field(default=None, max_length=20)
 
 
 class TokenResponse(BaseModel):
