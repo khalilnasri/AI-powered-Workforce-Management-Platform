@@ -12,14 +12,22 @@
 
 .login-card {
   width: 100%;
-  max-width: 22rem;
-  padding: 2rem;
+  max-width: 24rem;
+  padding: 2rem 2rem 1.75rem;
   border-radius: 1rem;
   background: #fff;
   box-shadow:
     0 1px 2px rgb(15 23 42 / 6%),
     0 12px 32px rgb(15 23 42 / 10%);
   border: 1px solid rgb(15 23 42 / 6%);
+}
+
+.login-card--wide {
+  max-width: 26rem;
+}
+
+.login-card__header {
+  margin-bottom: 1.5rem;
 }
 
 .login-brand {
@@ -33,31 +41,36 @@
 
 .login-title {
   margin: 0 0 0.5rem;
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: #0f172a;
 }
 
 .login-hint {
-  margin: 0 0 1.5rem;
+  margin: 0;
   font-size: 0.875rem;
-  color: #64748b;
-  line-height: 1.45;
-}
-
-.login-register-note {
-  margin: -0.75rem 0 1.25rem;
-  font-size: 0.8125rem;
   color: #64748b;
   line-height: 1.5;
 }
 
-.login-error {
-  margin-top: 1rem;
-  font-size: 0.875rem;
+.login-register-note {
+  margin: 0.75rem 0 0;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #475569;
+  line-height: 1.45;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+  border: 1px solid #e2e8f0;
+}
+
+.login-field {
+  margin-bottom: 1rem;
+}
+
+.login-field--error .login-label {
   color: #b91c1c;
-  line-height: 1.4;
 }
 
 .login-label {
@@ -71,7 +84,6 @@
 .login-input {
   width: 100%;
   box-sizing: border-box;
-  margin-bottom: 1rem;
   padding: 0.65rem 0.75rem;
   font-size: 1rem;
   border-radius: 0.5rem;
@@ -84,11 +96,15 @@
     background 0.15s ease;
 }
 
+.login-input--password {
+  padding-right: 2.75rem;
+}
+
 .login-input::placeholder {
   color: #94a3b8;
 }
 
-.login-input:hover {
+.login-input:hover:not(:disabled) {
   border-color: #cbd5e1;
 }
 
@@ -99,9 +115,94 @@
   box-shadow: 0 0 0 3px rgb(99 102 241 / 18%);
 }
 
+.login-input--invalid {
+  border-color: #fca5a5;
+  background: #fffafb;
+}
+
+.login-input--invalid:focus {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgb(239 68 68 / 15%);
+}
+
+.login-input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.login-password-wrap {
+  position: relative;
+}
+
+.login-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.5rem;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.login-password-toggle:hover:not(:disabled) {
+  color: #334155;
+  background: rgb(15 23 42 / 5%);
+}
+
+.login-password-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-password-toggle svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.login-field-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.login-field-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.8125rem;
+  color: #b91c1c;
+  line-height: 1.4;
+}
+
+.login-password-strength {
+  margin: -0.5rem 0 1rem;
+  font-size: 0.8125rem;
+  color: #b45309;
+  line-height: 1.4;
+}
+
+.login-form-error {
+  margin-top: 1rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.875rem;
+  color: #b91c1c;
+  line-height: 1.45;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 0.5rem;
+}
+
 .login-button {
   width: 100%;
-  margin-top: 0.25rem;
+  margin-top: 0.5rem;
   padding: 0.7rem 1rem;
   font-size: 1rem;
   font-weight: 600;
@@ -113,15 +214,16 @@
   transition:
     transform 0.08s ease,
     filter 0.15s ease,
-    box-shadow 0.15s ease;
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
   box-shadow: 0 6px 16px rgb(79 70 229 / 25%);
 }
 
-.login-button:hover {
+.login-button:hover:not(:disabled) {
   filter: brightness(1.05);
 }
 
-.login-button:active {
+.login-button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
@@ -132,20 +234,43 @@
     0 6px 16px rgb(79 70 229 / 25%);
 }
 
-.login-input--select {
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.75rem center;
-  padding-right: 2rem;
+.login-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.login-button__content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.login-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: login-spin 0.7s linear infinite;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .login-success {
   margin-top: 1rem;
+  padding: 0.65rem 0.75rem;
   font-size: 0.875rem;
   color: #047857;
-  line-height: 1.4;
+  line-height: 1.45;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 0.5rem;
 }
 
 .login-footer {
@@ -164,4 +289,701 @@
 
 .login-link:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 480px) {
+  .login-page {
+    padding: 1rem 0.75rem;
+    align-items: flex-start;
+    padding-top: 2rem;
+  }
+
+  .login-card {
+    padding: 1.5rem 1.25rem 1.25rem;
+  }
+
+  .login-title {
+    font-size: 1.375rem;
+  }
+}
+
+/* ==========================================================================
+   Nela Service — Login (desktop split-screen + mobile hero)
+   Scoped entirely under .nela-* — does not touch the .login-* classes above,
+   which Register.jsx still relies on.
+   ========================================================================== */
+
+.nela-login {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  font-family: "Inter", sans-serif;
+}
+
+.nela-login--desktop {
+  display: flex;
+  flex-direction: row;
+}
+
+.nela-login--mobile {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #fbfbfe;
+}
+
+/* ---- Brand panel (desktop, left) ---- */
+
+.nela-brand-panel {
+  position: relative;
+  flex: 1.1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 48px 52px;
+  background: linear-gradient(160deg, #2a1e6e 0%, #4b3fc4 55%, #6d5cf0 100%);
+  overflow: hidden;
+  color: #fff;
+}
+
+.nela-brand-top,
+.nela-brand-middle,
+.nela-brand-footer {
+  position: relative;
+  z-index: 1;
+}
+
+.nela-brand-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ---- Brand hero (mobile, top) ---- */
+
+.nela-mobile-hero {
+  position: relative;
+  padding: 56px 28px 40px;
+  border-radius: 0 0 30px 30px;
+  background: linear-gradient(160deg, #2a1e6e 0%, #4b3fc4 55%, #6d5cf0 100%);
+  overflow: hidden;
+  color: #fff;
+}
+
+.nela-mobile-hero .nela-brand-top {
+  margin-bottom: 22px;
+}
+
+.nela-mobile-hero .nela-hero {
+  font-size: 28px;
+  margin-bottom: 10px;
+}
+
+.nela-mobile-hero .nela-hero-copy {
+  font-size: 13px;
+  margin-bottom: 0;
+}
+
+/* ---- Ambient decoration: aurora blobs + grid ---- */
+
+.nela-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(26px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.nela-blob--1 {
+  width: 260px;
+  height: 260px;
+  top: -60px;
+  left: -40px;
+  background: radial-gradient(circle, #8b7bff, transparent 70%);
+  opacity: 0.45;
+  animation: nela-drift 18s ease-in-out infinite alternate;
+}
+
+.nela-blob--2 {
+  width: 220px;
+  height: 220px;
+  bottom: -50px;
+  right: -30px;
+  background: radial-gradient(circle, #37d9a8, transparent 70%);
+  opacity: 0.38;
+  animation: nela-drift 15s ease-in-out infinite alternate-reverse;
+}
+
+.nela-blob--3 {
+  width: 180px;
+  height: 180px;
+  bottom: 30%;
+  left: 40%;
+  background: radial-gradient(circle, #c7b8ff, transparent 70%);
+  opacity: 0.35;
+  animation: nela-drift 20s ease-in-out infinite alternate;
+}
+
+.nela-grid-overlay {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-size: 52px 52px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ---- Logo mark ---- */
+
+.nela-logo-mark {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  animation: nela-floatY 5s ease-in-out infinite;
+}
+
+.nela-logo-mark--glass {
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 18px rgba(43, 30, 110, 0.35);
+}
+
+.nela-logo-mark--solid {
+  border-radius: 13px;
+  background: linear-gradient(140deg, #6d5cf0, #4b3fc4);
+  box-shadow: 0 8px 18px rgba(91, 75, 216, 0.35);
+}
+
+.nela-logo-mark__n {
+  width: 55%;
+  height: 55%;
+}
+
+.nela-logo-mark__n path {
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: nela-dash 1.1s ease forwards;
+}
+
+.nela-logo-mark__dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: #9ff5d4;
+  box-shadow: 0 0 6px rgba(159, 245, 212, 0.8);
+  animation: nela-orbit 6s linear infinite;
+}
+
+/* ---- Wordmark ---- */
+
+.nela-wordmark {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+}
+
+.nela-wordmark__name {
+  font-family: "Sora", sans-serif;
+  font-weight: 800;
+  font-size: 19px;
+}
+
+.nela-wordmark__sub {
+  font-family: "Sora", sans-serif;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 4px;
+  margin-top: 3px;
+  display: block;
+}
+
+.nela-wordmark--onDark .nela-wordmark__name {
+  color: #fff;
+}
+
+.nela-wordmark--onDark .nela-wordmark__dot {
+  color: #9ff5d4;
+}
+
+.nela-wordmark--onDark .nela-wordmark__sub {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.nela-wordmark--onLight .nela-wordmark__name {
+  color: #1e1b4b;
+}
+
+.nela-wordmark--onLight .nela-wordmark__dot {
+  color: #5b4bd8;
+}
+
+.nela-wordmark--onLight .nela-wordmark__sub {
+  color: #a5a3c0;
+}
+
+/* ---- Hero heading / copy / stats (brand panel content) ---- */
+
+.nela-hero {
+  font-family: "Sora", sans-serif;
+  font-weight: 800;
+  font-size: 40px;
+  line-height: 1.12;
+  letter-spacing: -1px;
+  color: #fff;
+  max-width: 440px;
+  margin: 0 0 14px;
+}
+
+.nela-hero-copy {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.75);
+  max-width: 420px;
+  line-height: 1.55;
+  margin: 0 0 26px;
+}
+
+.nela-stats {
+  display: flex;
+  gap: 26px;
+}
+
+.nela-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 26px;
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.nela-stat:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.nela-stat__num {
+  font-family: "Sora", sans-serif;
+  font-weight: 800;
+  font-size: 26px;
+  color: #fff;
+}
+
+.nela-stat__label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.nela-brand-footer {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0;
+}
+
+.nela-mobile-footer {
+  text-align: center;
+  font-size: 11px;
+  color: #a5a3c0;
+  padding-bottom: 24px;
+  margin: auto 0 0;
+}
+
+/* ---- Form panel (desktop, right) / form section (mobile, bottom) ---- */
+
+.nela-form-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fbfbfe;
+  padding: 40px 24px;
+}
+
+.nela-form-inner {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+}
+
+.nela-mobile-form-section {
+  padding: 32px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.nela-compact-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 34px;
+}
+
+.nela-title {
+  font-family: "Sora", sans-serif;
+  font-weight: 800;
+  font-size: 30px;
+  color: #111827;
+  margin: 0 0 8px;
+}
+
+.nela-subtitle {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0 0 28px;
+  line-height: 1.5;
+}
+
+.nela-mobile-form-section .nela-title {
+  font-size: 24px;
+}
+
+.nela-mobile-form-section .nela-subtitle {
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+
+/* ---- Form fields ---- */
+
+.nela-field {
+  margin-bottom: 18px;
+}
+
+.nela-field--error .nela-label {
+  color: #b91c1c;
+}
+
+.nela-label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.nela-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.nela-label-row .nela-label {
+  margin-bottom: 0;
+}
+
+.nela-forgot-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b4bd8;
+  text-decoration: none;
+}
+
+.nela-forgot-link:hover {
+  text-decoration: underline;
+}
+
+.nela-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 15px;
+  font-size: 14px;
+  font-family: "Inter", sans-serif;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #f6f6fb;
+  color: #111827;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.nela-input::placeholder {
+  color: #a5a3c0;
+}
+
+.nela-input:hover:not(:disabled) {
+  border-color: #d7d5e8;
+}
+
+.nela-input:focus {
+  outline: none;
+  border-color: #6d5cf0;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(109, 92, 240, 0.12);
+}
+
+.nela-input--invalid {
+  border-color: #fca5a5;
+  background: #fffafb;
+}
+
+.nela-input--invalid:focus {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
+}
+
+.nela-input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.nela-input-wrap {
+  position: relative;
+}
+
+.nela-input--password {
+  padding-right: 44px;
+}
+
+.nela-eye-toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.nela-eye-toggle:hover:not(:disabled) {
+  color: #374151;
+  background: rgba(17, 24, 39, 0.05);
+}
+
+.nela-eye-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nela-eye-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.nela-field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.nela-field-error {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #b91c1c;
+  line-height: 1.4;
+}
+
+.nela-mobile-form-section .nela-input {
+  padding: 14px 15px;
+  font-size: 15px;
+  border-radius: 12px;
+}
+
+.nela-mobile-form-section .nela-eye-toggle {
+  width: 44px;
+  height: 44px;
+}
+
+/* ---- CTA button ---- */
+
+.nela-cta {
+  width: 100%;
+  margin-top: 8px;
+  padding: 15px;
+  font-family: "Sora", sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+  background: linear-gradient(135deg, #6d5cf0, #5b4bd8);
+  border: none;
+  border-radius: 13px;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(91, 75, 216, 0.35);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    opacity 0.15s ease;
+}
+
+.nela-cta:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(91, 75, 216, 0.45);
+}
+
+.nela-cta:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.nela-cta:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(109, 92, 240, 0.35),
+    0 10px 24px rgba(91, 75, 216, 0.35);
+}
+
+.nela-cta:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.nela-mobile-form-section .nela-cta {
+  padding: 16px;
+}
+
+.nela-cta__content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.nela-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: nela-spin 0.7s linear infinite;
+}
+
+/* ---- Form-level messages / footer ---- */
+
+.nela-form-error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #b91c1c;
+  line-height: 1.45;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+}
+
+.nela-form-success {
+  margin-top: 16px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #047857;
+  line-height: 1.45;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 10px;
+}
+
+.nela-footer-row {
+  margin: 22px 0 0;
+  text-align: center;
+  font-size: 14px;
+}
+
+.nela-link {
+  color: #5b4bd8;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.nela-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- Entrance animation ---- */
+
+.nela-rise {
+  opacity: 0;
+  transform: translateY(16px);
+  animation: nela-riseIn 0.6s ease forwards;
+  animation-delay: var(--nela-delay, 0s);
+}
+
+/* ---- Keyframes ---- */
+
+@keyframes nela-riseIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nela-drift {
+  0% {
+    transform: translate(0, 0);
+  }
+  100% {
+    transform: translate(24px, -18px);
+  }
+}
+
+@keyframes nela-orbit {
+  from {
+    transform: rotate(0deg) translateX(30px) rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg) translateX(30px) rotate(-360deg);
+  }
+}
+
+@keyframes nela-floatY {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes nela-dash {
+  from {
+    stroke-dashoffset: 60;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes nela-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nela-rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .nela-blob,
+  .nela-logo-mark,
+  .nela-logo-mark__dot,
+  .nela-logo-mark__n path {
+    animation: none !important;
+    opacity: 1 !important;
+    stroke-dashoffset: 0 !important;
+  }
 }

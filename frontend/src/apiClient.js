@@ -59,7 +59,7 @@ apiClient.interceptors.response.use(
     const isAuthRequest =
       url.includes("/auth/login") || url.includes("/auth/register");
 
-    if (status === 401 && !isAuthRequest) {
+    if ((status === 401 || status === 403) && !isAuthRequest) {
       clearToken();
 
       if (!window.location.pathname.startsWith("/login")) {

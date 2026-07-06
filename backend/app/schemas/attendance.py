@@ -34,6 +34,8 @@ class AttendanceStatusResponse(BaseModel):
     can_checkin: bool
     can_checkout: bool
     message: str
+    # Zeitpunkt des aktuell offenen Check-ins (nur wenn status=checked_in)
+    active_checkin_at: datetime | None = None
 
 
 class AttendanceLogEntry(BaseModel):
@@ -57,6 +59,8 @@ class WorkedTimeResponse(BaseModel):
     total_hours: float
     active: bool
     sessions: list[WorkedSessionItem]
+    # Start der laufenden Besuchssession (nur wenn active=true)
+    active_checkin_at: datetime | None = None
     # WorkSession-basierte offizielle Arbeitszeiten
     official_seconds: int = 0
     official_hours: float = 0.0
@@ -67,3 +71,6 @@ class WorkedTimeResponse(BaseModel):
     month_target_hours: int = 160
     official_hours_month: float = 0.0
     pending_hours_month: float = 0.0
+    # Exakte Sekunden (kein Float-Rundungsfehler)
+    official_seconds_month: int = 0
+    pending_seconds_month: int = 0

@@ -25,6 +25,11 @@ class WorkSessionResponse(BaseModel):
     rejection_reason: str | None = None
     admin_note:       str | None = None
 
+    # Original-Stempelzeiten (nur bei status=corrected befüllt)
+    # checkin_time/checkout_time enthalten dann die korrigierten Zeiten
+    original_checkin_time:  datetime | None = None
+    original_checkout_time: datetime | None = None
+
     created_at: datetime
     updated_at: datetime
 

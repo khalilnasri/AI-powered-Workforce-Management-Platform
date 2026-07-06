@@ -12,6 +12,7 @@ from app.routes import admin as admin_routes
 from app.routes import attendance as attendance_routes
 from app.routes import auth as auth_routes
 from app.routes import employee as employee_routes
+from app.routes import invite_codes as invite_codes_routes
 from app.routes import approvals as approvals_routes
 from app.routes import leave_admin as leave_admin_routes
 from app.routes import planning as planning_routes
@@ -144,6 +145,35 @@ def _migrate_db() -> None:
                     )
                 )
 
+    insp3 = inspect(engine)
+    if not insp3.has_table("invite_codes"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE invite_codes (
+                        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                        code                   VARCHAR(16) NOT NULL UNIQUE,
+                        created_by_employee_id INTEGER NOT NULL REFERENCES employees(id),
+                        created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        used_at                TIMESTAMP,
+                        used_by_employee_id    INTEGER REFERENCES employees(id)
+                    )
+                    """
+                    if IS_SQLITE
+                    else """
+                    CREATE TABLE invite_codes (
+                        id                     SERIAL PRIMARY KEY,
+                        code                   VARCHAR(16) NOT NULL UNIQUE,
+                        created_by_employee_id INTEGER NOT NULL REFERENCES employees(id),
+                        created_at             TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        used_at                TIMESTAMP WITH TIME ZONE,
+                        used_by_employee_id    INTEGER REFERENCES employees(id)
+                    )
+                    """
+                )
+            )
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -183,6 +213,7 @@ app.add_middleware(
 )
 
 app.include_router(admin_routes.router)
+app.include_router(invite_codes_routes.router)
 app.include_router(leave_admin_routes.router)
 app.include_router(approvals_routes.router)
 app.include_router(reports_routes.router)

@@ -30,6 +30,7 @@ from app.models.employee import Employee
 from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.location import WorkplaceLocation
 from app.models.work_session import WorkSession
+from app.utils.distance import haversine_meters
 from app.schemas.admin import (
     AttendanceReportResponse,
     EmployeeReportRow,
@@ -730,15 +731,24 @@ def _build_v2_data(
         loc.id: loc.name for loc in db.scalars(select(WorkplaceLocation)).all()
     }
     emp_to_loc: dict[int, str] = {}
-    for row in db.execute(
-        select(EmployeeWorkLocation.employee_id, EmployeeWorkLocation.location_id)
-        .order_by(EmployeeWorkLocation.location_id)
-    ).all():
-        if row.employee_id not in emp_to_loc:
-            emp_to_loc[row.employee_id] = loc_name_map.get(row.location_id, "Unbekannt")
-    for e in all_emps:
-        if e.id not in emp_to_loc and e.assigned_location_id:
-            emp_to_loc[e.id] = loc_name_map.get(e.assigned_location_id, "Unbekannt")
+    if location_ids:
+        # Wenn Standort-Filter aktiv: Mitarbeiter dem gefilterten Standort zuordnen,
+        # nicht ihrem "ersten" M2M-Eintrag (der wäre sonst immer die niedrigste location_id).
+        for lid in location_ids:
+            loc_name = loc_name_map.get(lid, "Unbekannt")
+            for emp_id in _emp_ids_for_location(db, lid):
+                if emp_id in target_ids and emp_id not in emp_to_loc:
+                    emp_to_loc[emp_id] = loc_name
+    else:
+        for row in db.execute(
+            select(EmployeeWorkLocation.employee_id, EmployeeWorkLocation.location_id)
+            .order_by(EmployeeWorkLocation.location_id)
+        ).all():
+            if row.employee_id in target_ids and row.employee_id not in emp_to_loc:
+                emp_to_loc[row.employee_id] = loc_name_map.get(row.location_id, "Unbekannt")
+        for e in all_emps:
+            if e.id in target_ids and e.id not in emp_to_loc and e.assigned_location_id:
+                emp_to_loc[e.id] = loc_name_map.get(e.assigned_location_id, "Unbekannt")
 
     # WorkSessions laden
     safe_ids = list(target_ids) or [-1]
@@ -749,6 +759,31 @@ def _build_v2_data(
         .where(WorkSession.employee_id.in_(safe_ids))
         .order_by(WorkSession.checkin_time)
     ).all()
+
+    # GPS-Fallback: Standort aus Check-in-Koordinaten ermitteln
+    # (für Mitarbeiter ohne Standort-Zuweisung in employee_work_locations)
+    all_locs_full = db.scalars(select(WorkplaceLocation)).all()
+    checkin_log_ids = [ws.checkin_log_id for ws in ws_list if ws.checkin_log_id is not None]
+    ws_gps_loc: dict[int, str] = {}
+    if checkin_log_ids and all_locs_full:
+        att_map = {
+            a.id: a
+            for a in db.scalars(
+                select(Attendance).where(Attendance.id.in_(checkin_log_ids))
+            ).all()
+        }
+        for ws in ws_list:
+            if ws.checkin_log_id and ws.checkin_log_id in att_map:
+                att = att_map[ws.checkin_log_id]
+                for loc in all_locs_full:
+                    if haversine_meters(att.lat, att.lng, loc.lat, loc.lng) <= float(loc.radius_meters):
+                        ws_gps_loc[ws.id] = loc.name
+                        break
+
+    def _session_loc(ws: WorkSession) -> str:
+        # GPS-Treffer zuerst (wo war der Mitarbeiter bei DIESEM Check-in?)
+        # Zuweisung nur als Fallback wenn kein GPS-Match vorhanden
+        return ws_gps_loc.get(ws.id) or emp_to_loc.get(ws.employee_id) or "Kein Standort"
 
     # Session-Rows
     session_rows: list[ReportV2SessionRow] = []
@@ -763,7 +798,7 @@ def _build_v2_data(
             employee_name=emp.name,
             date=ci_b.date().isoformat(),
             weekday=_WEEKDAYS_DE[ci_b.weekday()],
-            location_name=emp_to_loc.get(ws.employee_id, "Kein Standort"),
+            location_name=_session_loc(ws),
             checkin_time=ws.checkin_time,
             checkout_time=ws.checkout_time,
             break_minutes=0,
@@ -772,40 +807,44 @@ def _build_v2_data(
             status=ws.status,
         ))
 
-    # KPIs
-    off_min  = sum(r.duration_minutes for r in session_rows if r.status in ("approved", "corrected"))
-    pend_min = sum(r.duration_minutes for r in session_rows if r.status == "pending")
-    tot_min  = sum(r.duration_minutes for r in session_rows)
+    # KPIs — aggregate using raw duration_seconds to avoid minute-truncation errors
+    ws_by_id: dict[int, WorkSession] = {ws.employee_id: ws for ws in ws_list}
+    off_sec  = sum(ws.duration_seconds for ws in ws_list if ws.status in ("approved", "corrected"))
+    pend_sec = sum(ws.duration_seconds for ws in ws_list if ws.status == "pending")
+    tot_sec  = sum(ws.duration_seconds for ws in ws_list)
     date_set = {r.date for r in session_rows}
 
     kpis = ReportV2KPIs(
-        total_hours=round(tot_min / 60, 2),
-        official_hours=round(off_min / 60, 2),
-        pending_hours=round(pend_min / 60, 2),
+        total_hours=round(tot_sec / 3600, 2),
+        official_hours=round(off_sec / 3600, 2),
+        pending_hours=round(pend_sec / 3600, 2),
         total_shifts=len(session_rows),
         location_count=len({r.location_name for r in session_rows}),
         work_days=len(date_set),
     )
 
-    # Standort-Zusammenfassung
+    # Standort-Zusammenfassung — nur approved/corrected Sessions zählen
     loc_agg: dict[str, dict] = {}
-    for r in session_rows:
-        if r.location_name not in loc_agg:
-            loc_agg[r.location_name] = {"cnt": 0, "min": 0}
-        loc_agg[r.location_name]["cnt"] += 1
-        loc_agg[r.location_name]["min"] += r.duration_minutes
+    for ws in ws_list:
+        if ws.status not in ("approved", "corrected"):
+            continue
+        loc_name = _session_loc(ws)
+        if loc_name not in loc_agg:
+            loc_agg[loc_name] = {"cnt": 0, "sec": 0}
+        loc_agg[loc_name]["cnt"] += 1
+        loc_agg[loc_name]["sec"] += ws.duration_seconds
     location_summary = sorted([
         ReportV2LocationRow(
             location_name=k,
             shift_count=v["cnt"],
-            total_hours=round(v["min"] / 60, 2),
+            total_hours=round(v["sec"] / 3600, 2),
         ) for k, v in loc_agg.items()
     ], key=lambda x: x.total_hours, reverse=True)
 
-    # Trend-Daten
+    # Trend-Daten — use seconds from ws_list
     trend_agg: dict[str, dict] = {}
-    for r in session_rows:
-        ci_b = r.checkin_time.astimezone(_BERLIN)
+    for ws in ws_list:
+        ci_b = ws.checkin_time.astimezone(_BERLIN)
         if grouping == "daily":
             key   = ci_b.strftime("%Y-%m-%d")
             label = ci_b.strftime("%d.%m.%Y")
@@ -818,38 +857,41 @@ def _build_v2_data(
             label = ci_b.strftime("%m/%Y")
         if key not in trend_agg:
             trend_agg[key] = {"label": label, "off": 0, "pend": 0}
-        if r.status in ("approved", "corrected"):
-            trend_agg[key]["off"]  += r.duration_minutes
-        elif r.status == "pending":
-            trend_agg[key]["pend"] += r.duration_minutes
+        if ws.status in ("approved", "corrected"):
+            trend_agg[key]["off"]  += ws.duration_seconds
+        elif ws.status == "pending":
+            trend_agg[key]["pend"] += ws.duration_seconds
     trend_data = [
         ReportV2TrendRow(
             period=k, period_label=v["label"],
-            official_hours=round(v["off"] / 60, 2),
-            pending_hours=round(v["pend"] / 60, 2),
+            official_hours=round(v["off"] / 3600, 2),
+            pending_hours=round(v["pend"] / 3600, 2),
         ) for k, v in sorted(trend_agg.items())
     ]
 
-    # Mitarbeiter-Zusammenfassung
+    # Mitarbeiter-Zusammenfassung — use seconds from ws_list
     emp_agg: dict[int, dict] = {}
-    for r in session_rows:
-        if r.employee_id not in emp_agg:
-            emp_agg[r.employee_id] = {"name": r.employee_name, "off": 0, "pend": 0, "shifts": 0, "dates": set()}
-        if r.status in ("approved", "corrected"):
-            emp_agg[r.employee_id]["off"]  += r.duration_minutes
-        elif r.status == "pending":
-            emp_agg[r.employee_id]["pend"] += r.duration_minutes
-        emp_agg[r.employee_id]["shifts"] += 1
-        emp_agg[r.employee_id]["dates"].add(r.date)
+    for ws in ws_list:
+        emp = emp_map.get(ws.employee_id)
+        if emp is None:
+            continue
+        if ws.employee_id not in emp_agg:
+            emp_agg[ws.employee_id] = {"name": emp.name, "off": 0, "pend": 0, "shifts": 0, "dates": set()}
+        if ws.status in ("approved", "corrected"):
+            emp_agg[ws.employee_id]["off"]  += ws.duration_seconds
+        elif ws.status == "pending":
+            emp_agg[ws.employee_id]["pend"] += ws.duration_seconds
+        emp_agg[ws.employee_id]["shifts"] += 1
+        emp_agg[ws.employee_id]["dates"].add(ws.checkin_time.astimezone(_BERLIN).date().isoformat())
     employee_summary = sorted([
         ReportV2EmployeeRow(
             employee_id=eid,
             employee_name=v["name"],
-            official_hours=round(v["off"] / 60, 2),
-            pending_hours=round(v["pend"] / 60, 2),
+            official_hours=round(v["off"] / 3600, 2),
+            pending_hours=round(v["pend"] / 3600, 2),
             target_hours=resolved_month_target_hours(emp_map[eid]) if eid in emp_map else 160,
             diff_hours=round(
-                v["off"] / 60 - (resolved_month_target_hours(emp_map[eid]) if eid in emp_map else 160), 2
+                v["off"] / 3600 - (resolved_month_target_hours(emp_map[eid]) if eid in emp_map else 160), 2
             ),
             shift_count=v["shifts"],
             work_days=len(v["dates"]),
@@ -860,11 +902,11 @@ def _build_v2_data(
         resolved_month_target_hours(emp_map[eid]) for eid in target_ids if eid in emp_map
     )
     period_summary = ReportV2PeriodSummary(
-        total_hours=round(tot_min / 60, 2),
-        official_hours=round(off_min / 60, 2),
-        pending_hours=round(pend_min / 60, 2),
+        total_hours=round(tot_sec / 3600, 2),
+        official_hours=round(off_sec / 3600, 2),
+        pending_hours=round(pend_sec / 3600, 2),
         target_hours=total_target,
-        diff_hours=round(off_min / 60 - total_target, 2),
+        diff_hours=round(off_sec / 3600 - total_target, 2),
         shift_count=len(session_rows),
         work_days=len(date_set),
     )
@@ -907,11 +949,15 @@ def reports_v2_excel(
     db: Session = Depends(get_db),
     _: Employee = Depends(require_admin),
 ):
-    """Excel-Export V2: 4 professionelle Sheets."""
+    """Excel-Export V2 — professionelles Design mit Charts, Deckblatt und Farbschema."""
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import (
+            Alignment, Border, Font, PatternFill, Side,
+        )
         from openpyxl.utils import get_column_letter
+        from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+        from openpyxl.chart.series import DataPoint
     except ImportError as exc:
         logger.error("openpyxl not available: %s", exc)
         raise HTTPException(status_code=500, detail="openpyxl nicht installiert.")
@@ -926,112 +972,310 @@ def reports_v2_excel(
         logger.error("_build_v2_data failed:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Datenabruf fehlgeschlagen: {exc}")
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    # HELPERS
+    # ═══════════════════════════════════════════════════════
     def _to_berlin(dt: datetime | None) -> datetime | None:
-        """Konvertiert eine datetime (naive oder aware) nach Europe/Berlin."""
         if dt is None:
             return None
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(_BERLIN)
 
-    def _fmt_dur(minutes: float | int | None) -> str:
-        """Formatiert Minuten als H:MM (auch negativ)."""
+    def _h(secs: float) -> float:
+        """Stunden als gerundeter Float — für Zahlenfelder."""
+        return round(secs / 3600, 2) if secs else 0.0
+
+    def _fmt_h(h: float) -> str:
+        """'55,43 h' für Anzeige-Felder."""
+        return f"{h:,.2f} h".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _fmt_hm(minutes: float | int | None) -> str:
+        """'55:43' Format."""
         if minutes is None:
             return "—"
         minutes = int(round(minutes))
         sign = "-" if minutes < 0 else ""
-        h, m = divmod(abs(minutes), 60)
-        return f"{sign}{h}:{m:02d}"
+        hh, mm = divmod(abs(minutes), 60)
+        return f"{sign}{hh}:{mm:02d}"
 
-    def _hdr(ws_sheet, cols: list[str], hdr_fill, hdr_font) -> None:
-        for ci, c in enumerate(cols, 1):
-            cell = ws_sheet.cell(row=1, column=ci, value=c)
-            cell.font      = hdr_font
-            cell.fill      = hdr_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    def _autofit(ws_sheet) -> None:
+    def _autofit(ws_sheet, min_w: int = 8, max_w: int = 42) -> None:
         try:
             for col in ws_sheet.columns:
                 if not col:
                     continue
-                w = max((len(str(cell.value or "")) for cell in col), default=0)
+                w = max((len(str(cell.value or "")) for cell in col), default=min_w)
                 ws_sheet.column_dimensions[
                     get_column_letter(col[0].column)
-                ].width = min(w + 4, 50)
+                ].width = min(max(w + 3, min_w), max_w)
         except Exception:
-            pass  # Autofit ist optional – nie daran scheitern
+            pass
+
+    def _thin_border() -> Border:
+        s = Side(style="thin", color="FFD1D9E6")
+        return Border(left=s, right=s, top=s, bottom=s)
+
+    def _outer_border() -> Border:
+        s = Side(style="medium", color="FF1E3A5F")
+        return Border(left=s, right=s, top=s, bottom=s)
+
+    def _apply_table_border(ws_sheet, row_idx: int, num_cols: int) -> None:
+        b = _thin_border()
+        for ci in range(1, num_cols + 1):
+            ws_sheet.cell(row=row_idx, column=ci).border = b
 
     try:
-        # ── Styles ───────────────────────────────────────────────────────────
-        HDR_FILL    = PatternFill("solid", fgColor="FF1E3A5F")
-        HDR_FONT    = Font(bold=True, color="FFFFFFFF", size=10)
-        GREEN_FILL  = PatternFill("solid", fgColor="FFD1FAE5")
-        RED_FILL    = PatternFill("solid", fgColor="FFFEE2E2")
-        ORANGE_FILL = PatternFill("solid", fgColor="FFFEF3C7")
-        BLUE_FILL   = PatternFill("solid", fgColor="FFDBEAFE")
-        GRAY_FILL   = PatternFill("solid", fgColor="FFF8FAFC")
-        BOLD        = Font(bold=True)
+        # ═══════════════════════════════════════════════════════
+        # FARB-PALETTE & STYLES
+        # ═══════════════════════════════════════════════════════
+        C_NAVY       = "FF1E3A5F"
+        C_NAVY_LIGHT = "FF2D5282"
+        C_GOLD       = "FFC8A84B"
+        C_WHITE      = "FFFFFFFF"
+        C_ROW_ALT    = "FFF0F4FA"
+        C_ROW_WHITE  = "FFFFFFFF"
+        C_GREEN_D    = "FF065F46"
+        C_GREEN_BG   = "FFD1FAE5"
+        C_RED_D      = "FF991B1B"
+        C_RED_BG     = "FFFEE2E2"
+        C_ORANGE_BG  = "FFFEF3C7"
+        C_BLUE_BG    = "FFDBEAFE"
+        C_GRAY_BG    = "FFF8FAFC"
+        C_SECTION    = "FFE8EDF5"
+
+        def _fill(hex_color: str) -> PatternFill:
+            return PatternFill("solid", fgColor=hex_color)
+
+        def _font(bold=False, size=10, color=C_NAVY, italic=False) -> Font:
+            return Font(bold=bold, size=size, color=color, italic=italic,
+                        name="Calibri")
+
+        HDR_FILL  = _fill(C_NAVY)
+        HDR_FONT  = _font(bold=True, size=10, color=C_WHITE)
+        HDR_ALN   = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        SUBHDR_FILL = _fill(C_NAVY_LIGHT)
+        SUBHDR_FONT = _font(bold=True, size=9, color=C_WHITE)
+
+        BOLD10 = _font(bold=True, size=10)
+        BOLD9  = _font(bold=True, size=9)
+        REG9   = _font(size=9)
+        MUTED  = _font(size=9, color="FF64748B")
 
         STATUS_FILL = {
-            "approved":  GREEN_FILL,
-            "corrected": BLUE_FILL,
-            "rejected":  RED_FILL,
-            "pending":   ORANGE_FILL,
+            "approved":  _fill(C_GREEN_BG),
+            "corrected": _fill(C_BLUE_BG),
+            "rejected":  _fill(C_RED_BG),
+            "pending":   _fill(C_ORANGE_BG),
+        }
+        STATUS_FONT = {
+            "approved":  _font(bold=True, size=9, color="FF065F46"),
+            "corrected": _font(bold=True, size=9, color="FF1E40AF"),
+            "rejected":  _font(bold=True, size=9, color=C_RED_D),
+            "pending":   _font(bold=True, size=9, color="FF92400E"),
         }
         STATUS_DE = {
-            "approved":  "Genehmigt",
-            "corrected": "Korrigiert",
-            "rejected":  "Abgelehnt",
-            "pending":   "Ausstehend",
+            "approved":  "✔ Genehmigt",
+            "corrected": "✎ Korrigiert",
+            "rejected":  "✖ Abgelehnt",
+            "pending":   "⏳ Ausstehend",
         }
 
-        ps          = report.period_summary
-        k           = report.kpis
-        multi_emp   = len(report.employee_summary) > 1
-        wb          = Workbook()
+        ps        = report.period_summary
+        k         = report.kpis
+        multi_emp = len(report.employee_summary) > 1
+        now_str   = datetime.now(_BERLIN).strftime("%d.%m.%Y %H:%M")
 
-        # ── Sheet 1: Zusammenfassung ──────────────────────────────────────────
-        ws1        = wb.active
-        ws1.title  = "Zusammenfassung"
-        emp_label  = str(len(report.employee_summary)) if report.employee_summary else "Alle"
-        rows1 = [
-            ("Zeitraum",                f"{from_date} – {to_date}"),
-            ("Mitarbeiter",             emp_label),
-            ("", ""),
-            ("KPI",                     "Wert"),
-            ("Gesamtstunden (h)",       _fmt_dur(k.total_hours * 60)),
-            ("Offizielle Stunden (h)",  _fmt_dur(ps.official_hours * 60)),
-            ("Ausstehende Stunden (h)", _fmt_dur(ps.pending_hours * 60)),
-            ("Soll-Stunden (h)",        str(ps.target_hours)),
-            ("Differenz (h)",           _fmt_dur(ps.diff_hours * 60)),
-            ("Schichten gesamt",        str(k.total_shifts)),
-            ("Arbeitstage",             str(k.work_days)),
-            ("Standorte",               str(k.location_count)),
+        wb = Workbook()
+
+        # ═══════════════════════════════════════════════════════
+        # SHEET 1 — DECKBLATT
+        # ═══════════════════════════════════════════════════════
+        ws1       = wb.active
+        ws1.title = "📊 Übersicht"
+        ws1.sheet_view.showGridLines = False
+        ws1.column_dimensions["A"].width = 3
+        ws1.column_dimensions["B"].width = 28
+        ws1.column_dimensions["C"].width = 22
+        ws1.column_dimensions["D"].width = 22
+        ws1.column_dimensions["E"].width = 22
+        ws1.column_dimensions["F"].width = 22
+        ws1.column_dimensions["G"].width = 3
+
+        # Titel-Banner (Zeilen 1-4)
+        for r in range(1, 5):
+            ws1.row_dimensions[r].height = 18
+        for c in range(1, 8):
+            for r in range(1, 5):
+                ws1.cell(row=r, column=c).fill = _fill(C_NAVY)
+
+        ws1.merge_cells("B1:F4")
+        title_cell = ws1["B1"]
+        title_cell.value     = "ARBEITSZEITBERICHT"
+        title_cell.font      = Font(bold=True, size=22, color=C_WHITE, name="Calibri")
+        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+
+        # Gold-Linie
+        ws1.row_dimensions[5].height = 4
+        for c in range(1, 8):
+            ws1.cell(row=5, column=c).fill = _fill(C_GOLD)
+
+        # Meta-Info (Zeilen 6-9)
+        ws1.row_dimensions[6].height = 6
+        meta = [
+            (7,  "Zeitraum",    f"{from_date}  →  {to_date}"),
+            (8,  "Erstellt am", now_str),
+            (9,  "Mitarbeiter", str(len(report.employee_summary)) if report.employee_summary else "Alle"),
         ]
-        for r in rows1:
-            ws1.append(list(r))
-        ws1["A4"].font = BOLD
-        ws1["B4"].font = BOLD
-        ws1.freeze_panes = "A2"
-        _autofit(ws1)
+        for row_n, label, val in meta:
+            ws1.row_dimensions[row_n].height = 20
+            lc = ws1.cell(row=row_n, column=2, value=label)
+            lc.font      = _font(bold=True, size=10, color="FF64748B")
+            lc.alignment = Alignment(vertical="center")
+            vc = ws1.cell(row=row_n, column=3, value=val)
+            vc.font      = _font(bold=True, size=11, color=C_NAVY)
+            vc.alignment = Alignment(vertical="center")
 
-        # ── Sheet 2: Arbeitszeiten ────────────────────────────────────────────
-        ws2        = wb.create_sheet("Arbeitszeiten")
-        cols2      = (["Mitarbeiter", "E-Mail"] if multi_emp else []) + [
-            "Datum", "Wochentag", "Standort", "Check-In", "Check-Out",
-            "Pause", "Arbeitszeit", "Status",
+        # KPI-Karten (Zeilen 11-17)
+        ws1.row_dimensions[10].height = 10
+        ws1.row_dimensions[11].height = 14
+        ws1.row_dimensions[12].height = 36
+        ws1.row_dimensions[13].height = 18
+        ws1.row_dimensions[14].height = 10
+        ws1.row_dimensions[15].height = 14
+        ws1.row_dimensions[16].height = 36
+        ws1.row_dimensions[17].height = 18
+
+        kpi_cards = [
+            ("B",  "C",  "GESAMTSTUNDEN",           _fmt_h(k.total_hours),          C_NAVY),
+            ("D",  "E",  "OFFIZIELLE STUNDEN",       _fmt_h(ps.official_hours),      "FF065F46"),
+            ("F",  "G",  "AUSSTEHEND",               _fmt_h(ps.pending_hours),       "FF92400E"),
         ]
-        _hdr(ws2, cols2, HDR_FILL, HDR_FONT)
-        ws2.freeze_panes = "A2"
-        ws2.auto_filter.ref = f"A1:{get_column_letter(len(cols2))}1"
+        kpi_cards2 = [
+            ("B",  "C",  "SOLL-STUNDEN",             f"{ps.target_hours} h",         C_NAVY_LIGHT),
+            ("D",  "E",  "DIFFERENZ",                _fmt_hm(ps.diff_hours * 60),    C_GREEN_D if ps.diff_hours >= 0 else C_RED_D),
+            ("F",  "G",  "SCHICHTEN",                str(k.total_shifts),             "FF6B21A8"),
+        ]
 
-        for row in report.sessions:
+        for start_col, end_col, label, val, color in kpi_cards:
+            ws1.merge_cells(f"{start_col}11:{end_col}11")
+            lbl = ws1[f"{start_col}11"]
+            lbl.value     = label
+            lbl.font      = _font(bold=True, size=8, color="FF64748B")
+            lbl.alignment = Alignment(horizontal="center", vertical="center")
+            lbl.fill      = _fill(C_SECTION)
+
+            ws1.merge_cells(f"{start_col}12:{end_col}12")
+            vc = ws1[f"{start_col}12"]
+            vc.value     = val
+            vc.font      = Font(bold=True, size=18, color=color, name="Calibri")
+            vc.alignment = Alignment(horizontal="center", vertical="center")
+            vc.fill      = _fill(C_SECTION)
+
+            ws1.merge_cells(f"{start_col}13:{end_col}13")
+            ws1[f"{start_col}13"].fill = _fill(C_SECTION)
+
+            # farbiger Balken unter KPI
+            ws1.merge_cells(f"{start_col}14:{end_col}14")
+            ws1[f"{start_col}14"].fill = _fill(color)
+
+        for start_col, end_col, label, val, color in kpi_cards2:
+            ws1.merge_cells(f"{start_col}15:{end_col}15")
+            lbl = ws1[f"{start_col}15"]
+            lbl.value     = label
+            lbl.font      = _font(bold=True, size=8, color="FF64748B")
+            lbl.alignment = Alignment(horizontal="center", vertical="center")
+            lbl.fill      = _fill(C_SECTION)
+
+            ws1.merge_cells(f"{start_col}16:{end_col}16")
+            vc = ws1[f"{start_col}16"]
+            vc.value     = val
+            vc.font      = Font(bold=True, size=18, color=color, name="Calibri")
+            vc.alignment = Alignment(horizontal="center", vertical="center")
+            vc.fill      = _fill(C_SECTION)
+
+            ws1.merge_cells(f"{start_col}17:{end_col}17")
+            ws1[f"{start_col}17"].fill = _fill(C_SECTION)
+
+            ws1.merge_cells(f"{start_col}18:{end_col}18")
+            ws1[f"{start_col}18"].fill = _fill(color)
+
+        # Weitere Kennzahlen (Zeilen 20-26)
+        ws1.row_dimensions[19].height = 10
+        ws1.row_dimensions[20].height = 20
+        stat_hdr = ws1.cell(row=20, column=2, value="WEITERE KENNZAHLEN")
+        stat_hdr.font      = _font(bold=True, size=9, color="FF64748B")
+        stat_hdr.alignment = Alignment(vertical="center")
+
+        stat_rows = [
+            ("Arbeitstage",      str(k.work_days)),
+            ("Standorte",        str(k.location_count)),
+            ("Zeitraum (Tage)",  str((date.fromisoformat(to_date) - date.fromisoformat(from_date)).days + 1)),
+        ]
+        for i, (lbl, val) in enumerate(stat_rows, start=21):
+            ws1.row_dimensions[i].height = 18
+            lc = ws1.cell(row=i, column=2, value=lbl)
+            lc.font      = REG9
+            lc.alignment = Alignment(vertical="center")
+            vc = ws1.cell(row=i, column=3, value=val)
+            vc.font      = BOLD9
+            vc.alignment = Alignment(vertical="center")
+            for c in range(2, 7):
+                ws1.cell(row=i, column=c).fill = _fill(C_ROW_ALT) if i % 2 == 0 else _fill(C_ROW_WHITE)
+
+        # Footer
+        ws1.row_dimensions[27].height = 6
+        for c in range(1, 8):
+            ws1.cell(row=27, column=c).fill = _fill(C_GOLD)
+        ws1.row_dimensions[28].height = 16
+        ft = ws1.cell(row=28, column=2, value="Erstellt mit Time Stemple Workforce Management")
+        ft.font      = _font(italic=True, size=8, color="FF94A3B8")
+        ft.alignment = Alignment(vertical="center")
+        ws1.merge_cells("B28:F28")
+
+        # ═══════════════════════════════════════════════════════
+        # SHEET 2 — SCHICHTDETAILS
+        # ═══════════════════════════════════════════════════════
+        ws2       = wb.create_sheet("📋 Schichtdetails")
+        ws2.sheet_view.showGridLines = False
+        ws2.freeze_panes = "A3"
+
+        # Titel-Zeile
+        ws2.row_dimensions[1].height = 28
+        col_offset = 2 if multi_emp else 0
+        total_cols = col_offset + 8
+        ws2.merge_cells(f"A1:{get_column_letter(total_cols)}1")
+        th = ws2["A1"]
+        th.value     = "SCHICHTDETAILS"
+        th.font      = Font(bold=True, size=13, color=C_WHITE, name="Calibri")
+        th.fill      = _fill(C_NAVY)
+        th.alignment = Alignment(horizontal="left", vertical="center",
+                                  indent=1)
+
+        # Spalten-Header (Zeile 2)
+        ws2.row_dimensions[2].height = 24
+        base_cols = ["Datum", "Wochentag", "Standort", "Check-In", "Check-Out",
+                     "Pause", "Std. (h)", "Status"]
+        cols2 = (["Mitarbeiter", "E-Mail"] if multi_emp else []) + base_cols
+        for ci, c in enumerate(cols2, 1):
+            cell = ws2.cell(row=2, column=ci, value=c)
+            cell.font      = HDR_FONT
+            cell.fill      = HDR_FILL
+            cell.alignment = HDR_ALN
+            cell.border    = _thin_border()
+
+        ws2.auto_filter.ref = f"A2:{get_column_letter(len(cols2))}2"
+
+        # Daten
+        for idx, row in enumerate(report.sessions):
             ci_b = _to_berlin(row.checkin_time)
             co_b = _to_berlin(row.checkout_time)
             if ci_b is None:
-                continue  # degenerate session – skip
+                continue
+            ri   = ws2.max_row + 1
+            ws2.row_dimensions[ri].height = 18
+            alt  = _fill(C_ROW_ALT) if ri % 2 == 0 else _fill(C_ROW_WHITE)
+            dur_h = round(row.work_minutes / 60, 2) if row.work_minutes else 0.0
             vals = (
                 ([row.employee_name, emp_email_map.get(row.employee_id, "")] if multi_emp else [])
                 + [
@@ -1041,64 +1285,398 @@ def reports_v2_excel(
                     ci_b.strftime("%H:%M"),
                     co_b.strftime("%H:%M") if co_b else "—",
                     "—",
-                    _fmt_dur(row.work_minutes),
+                    dur_h,
                     STATUS_DE.get(row.status, row.status),
                 ]
             )
-            ri = ws2.max_row + 1
-            ws2.append(vals)
-            fill = STATUS_FILL.get(row.status, GRAY_FILL)
+            for ci, v in enumerate(vals, 1):
+                cell = ws2.cell(row=ri, column=ci, value=v)
+                cell.border = _thin_border()
+                # Status-Spalte einfärben
+                if ci == len(vals):
+                    cell.fill = STATUS_FILL.get(row.status, _fill(C_GRAY_BG))
+                    cell.font = STATUS_FONT.get(row.status, REG9)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                elif ci <= col_offset:
+                    cell.font = BOLD9
+                    cell.fill = alt
+                    cell.alignment = Alignment(vertical="center")
+                else:
+                    cell.fill = alt
+                    cell.font = REG9
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Stunden numerisch formatieren
+            h_col = len(vals) - 1
+            ws2.cell(row=ri, column=h_col).number_format = '#,##0.00" h"'
+
+        # Summenzeile
+        if ws2.max_row >= 3:
+            sr = ws2.max_row + 1
+            ws2.row_dimensions[sr].height = 20
             for ci in range(1, len(cols2) + 1):
-                ws2.cell(row=ri, column=ci).fill = fill
+                cell = ws2.cell(row=sr, column=ci)
+                cell.fill   = _fill(C_NAVY)
+                cell.border = _thin_border()
+            h_col   = len(cols2) - 1
+            sum_val = sum(
+                (ws2.cell(row=r, column=h_col).value or 0)
+                for r in range(3, sr)
+                if isinstance(ws2.cell(row=r, column=h_col).value, (int, float))
+            )
+            lc = ws2.cell(row=sr, column=1, value="GESAMT")
+            lc.font      = HDR_FONT
+            lc.alignment = Alignment(vertical="center", indent=1)
+            sc = ws2.cell(row=sr, column=h_col, value=round(sum_val, 2))
+            sc.font          = HDR_FONT
+            sc.alignment     = Alignment(horizontal="center", vertical="center")
+            sc.number_format = '#,##0.00" h"'
+
         _autofit(ws2)
+        ws2.column_dimensions["A"].width = max(ws2.column_dimensions["A"].width, 12)
 
-        # ── Sheet 3: Standortauswertung ───────────────────────────────────────
-        ws3   = wb.create_sheet("Standortauswertung")
-        cols3 = ["Standort", "Anzahl Schichten", "Stunden"]
-        _hdr(ws3, cols3, HDR_FILL, HDR_FONT)
-        ws3.freeze_panes = "A2"
-        ws3.auto_filter.ref = f"A1:{get_column_letter(len(cols3))}1"
+        # ═══════════════════════════════════════════════════════
+        # SHEET 3 — MITARBEITERÜBERSICHT + BALKENDIAGRAMM
+        # ═══════════════════════════════════════════════════════
+        ws3       = wb.create_sheet("👥 Mitarbeiter")
+        ws3.sheet_view.showGridLines = False
+        ws3.freeze_panes = "A3"
 
-        for loc in report.location_summary:
-            ws3.append([
-                loc.location_name,
-                loc.shift_count,
-                _fmt_dur(loc.total_hours * 60),
-            ])
-        sum_row3 = ws3.max_row + 1
-        total_shifts3 = sum(l.shift_count for l in report.location_summary)
-        ws3.append(["GESAMT", total_shifts3, _fmt_dur(k.total_hours * 60)])
-        for ci in range(1, 4):
-            ws3.cell(row=sum_row3, column=ci).font = BOLD
-        _autofit(ws3)
+        # Titel
+        ws3.row_dimensions[1].height = 28
+        ws3.merge_cells("A1:H1")
+        th3 = ws3["A1"]
+        th3.value     = "MITARBEITERÜBERSICHT"
+        th3.font      = Font(bold=True, size=13, color=C_WHITE, name="Calibri")
+        th3.fill      = _fill(C_NAVY)
+        th3.alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
-        # ── Sheet 4: Mitarbeiteruebersicht ────────────────────────────────────
-        ws4   = wb.create_sheet("Mitarbeiteruebersicht")
-        cols4 = [
-            "Mitarbeiter", "E-Mail", "Offizielle Stunden", "Ausstehend",
-            "Schichten", "Arbeitstage", "Soll (h)", "Differenz (h)",
-        ]
-        _hdr(ws4, cols4, HDR_FILL, HDR_FONT)
-        ws4.freeze_panes = "A2"
-        ws4.auto_filter.ref = f"A1:{get_column_letter(len(cols4))}1"
+        # Header
+        ws3.row_dimensions[2].height = 24
+        cols3 = ["Mitarbeiter", "E-Mail", "Ist (h)", "Ausstehend (h)",
+                 "Soll (h)", "Differenz (h)", "Schichten", "Arbeitstage"]
+        for ci, c in enumerate(cols3, 1):
+            cell = ws3.cell(row=2, column=ci, value=c)
+            cell.font      = HDR_FONT
+            cell.fill      = HDR_FILL
+            cell.alignment = HDR_ALN
+            cell.border    = _thin_border()
 
-        for emp_row in report.employee_summary:
+        ws3.auto_filter.ref = f"A2:{get_column_letter(len(cols3))}2"
+
+        data_start3 = 3
+        for idx, emp_row in enumerate(report.employee_summary):
+            ri   = ws3.max_row + 1
             diff = emp_row.diff_hours or 0.0
-            ri   = ws4.max_row + 1
-            ws4.append([
+            ws3.row_dimensions[ri].height = 18
+            alt  = _fill(C_ROW_ALT) if ri % 2 == 0 else _fill(C_ROW_WHITE)
+            vals = [
                 emp_row.employee_name,
                 emp_email_map.get(emp_row.employee_id, ""),
-                _fmt_dur(emp_row.official_hours * 60),
-                _fmt_dur(emp_row.pending_hours * 60),
+                round(emp_row.official_hours, 2),
+                round(emp_row.pending_hours, 2),
+                float(emp_row.target_hours),
+                round(diff, 2),
                 emp_row.shift_count,
                 emp_row.work_days,
-                str(emp_row.target_hours),
-                _fmt_dur(diff * 60),
-            ])
-            fill = GREEN_FILL if diff >= 0 else RED_FILL
-            for ci in [3, 8]:
-                ws4.cell(row=ri, column=ci).fill = fill
+            ]
+            for ci, v in enumerate(vals, 1):
+                cell = ws3.cell(row=ri, column=ci, value=v)
+                cell.border = _thin_border()
+                cell.font   = BOLD9 if ci == 1 else REG9
+                cell.alignment = Alignment(
+                    vertical="center",
+                    horizontal="center" if ci > 2 else "left",
+                )
+                if ci == 1:
+                    cell.fill = alt
+                elif ci == 3:
+                    cell.fill = _fill(C_GREEN_BG)
+                    cell.font = _font(bold=True, size=9, color=C_GREEN_D)
+                    cell.number_format = '#,##0.00" h"'
+                elif ci == 4:
+                    cell.fill = _fill(C_ORANGE_BG)
+                    cell.number_format = '#,##0.00" h"'
+                elif ci == 5:
+                    cell.fill = _fill(C_SECTION)
+                    cell.number_format = '#,##0.00" h"'
+                elif ci == 6:
+                    cell.fill = _fill(C_GREEN_BG) if diff >= 0 else _fill(C_RED_BG)
+                    cell.font = _font(bold=True, size=9,
+                                      color=C_GREEN_D if diff >= 0 else C_RED_D)
+                    cell.number_format = '+#,##0.00" h";-#,##0.00" h"'
+                else:
+                    cell.fill = alt
+
+        # Summenzeile
+        if ws3.max_row >= 3:
+            sr3 = ws3.max_row + 1
+            ws3.row_dimensions[sr3].height = 20
+            for ci in range(1, len(cols3) + 1):
+                c = ws3.cell(row=sr3, column=ci)
+                c.fill   = _fill(C_NAVY)
+                c.border = _thin_border()
+                c.font   = HDR_FONT
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            ws3.cell(row=sr3, column=1, value="GESAMT").alignment = Alignment(
+                horizontal="left", vertical="center", indent=1)
+            for ci, col_key in [(3, "official_hours"), (4, "pending_hours"),
+                                 (5, "target_hours"), (7, "shift_count"), (8, "work_days")]:
+                total = sum(getattr(e, col_key, 0) or 0 for e in report.employee_summary)
+                c = ws3.cell(row=sr3, column=ci, value=round(total, 2))
+                if ci in (3, 4, 5):
+                    c.number_format = '#,##0.00" h"'
+            diff_total = round(sum((e.diff_hours or 0) for e in report.employee_summary), 2)
+            dc = ws3.cell(row=sr3, column=6, value=diff_total)
+            dc.number_format = '+#,##0.00" h";-#,##0.00" h"'
+
+        _autofit(ws3)
+
+        # Balkendiagramm: Ist vs. Soll pro Mitarbeiter
+        if report.employee_summary:
+            data_rows3 = ws3.max_row - len(report.employee_summary)
+            chart3 = BarChart()
+            chart3.type    = "col"
+            chart3.title   = "Ist- vs. Soll-Stunden pro Mitarbeiter"
+            chart3.y_axis.title = "Stunden"
+            chart3.x_axis.title = "Mitarbeiter"
+            chart3.style   = 10
+            chart3.width   = 22
+            chart3.height  = 14
+
+            n_emp = len(report.employee_summary)
+            ist_ref  = Reference(ws3, min_col=3, min_row=2,
+                                  max_row=2 + n_emp)
+            soll_ref = Reference(ws3, min_col=5, min_row=2,
+                                  max_row=2 + n_emp)
+            cats_ref = Reference(ws3, min_col=1, min_row=3,
+                                  max_row=2 + n_emp)
+            chart3.add_data(ist_ref,  titles_from_data=True)
+            chart3.add_data(soll_ref, titles_from_data=True)
+            chart3.set_categories(cats_ref)
+            chart3.series[0].graphicalProperties.solidFill = "1E3A5F"
+            chart3.series[1].graphicalProperties.solidFill = "C8A84B"
+            chart3.shape = 4
+            ws3.add_chart(chart3, f"A{ws3.max_row + 2}")
+
+        # ═══════════════════════════════════════════════════════
+        # SHEET 4 — STANDORTAUSWERTUNG + DIAGRAMME
+        # ═══════════════════════════════════════════════════════
+        ws4       = wb.create_sheet("📍 Standorte")
+        ws4.sheet_view.showGridLines = False
+        ws4.freeze_panes = "A3"
+
+        ws4.row_dimensions[1].height = 28
+        ws4.merge_cells("A1:E1")
+        th4 = ws4["A1"]
+        th4.value     = "STANDORTAUSWERTUNG"
+        th4.font      = Font(bold=True, size=13, color=C_WHITE, name="Calibri")
+        th4.fill      = _fill(C_NAVY)
+        th4.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+        ws4.row_dimensions[2].height = 24
+        cols4 = ["Standort", "Schichten", "Offizielle Std. (h)", "Anteil (%)", "Bewertung"]
+        for ci, c in enumerate(cols4, 1):
+            cell = ws4.cell(row=2, column=ci, value=c)
+            cell.font      = HDR_FONT
+            cell.fill      = HDR_FILL
+            cell.alignment = HDR_ALN
+            cell.border    = _thin_border()
+
+        total_h4 = sum(l.total_hours for l in report.location_summary) or 1.0
+        RATINGS = ["★★★★★", "★★★★☆", "★★★☆☆", "★★☆☆☆", "★☆☆☆☆"]
+        for idx, loc in enumerate(report.location_summary):
+            ri  = ws4.max_row + 1
+            ws4.row_dimensions[ri].height = 18
+            alt = _fill(C_ROW_ALT) if ri % 2 == 0 else _fill(C_ROW_WHITE)
+            pct = round(loc.total_hours / total_h4 * 100, 1)
+            rating_idx = min(int((1 - pct / 100) * 5), 4)
+            vals = [loc.location_name, loc.shift_count,
+                    round(loc.total_hours, 2), pct, RATINGS[rating_idx]]
+            for ci, v in enumerate(vals, 1):
+                cell = ws4.cell(row=ri, column=ci, value=v)
+                cell.border    = _thin_border()
+                cell.alignment = Alignment(
+                    vertical="center",
+                    horizontal="center" if ci > 1 else "left",
+                )
+                if ci == 1:
+                    cell.font = BOLD9
+                    cell.fill = alt
+                elif ci == 3:
+                    cell.fill = _fill(C_GREEN_BG)
+                    cell.font = _font(bold=True, size=9, color=C_GREEN_D)
+                    cell.number_format = '#,##0.00" h"'
+                elif ci == 4:
+                    cell.fill = alt
+                    cell.font = REG9
+                    cell.number_format = '0.0"%"'
+                elif ci == 5:
+                    cell.fill = _fill(C_GOLD)
+                    cell.font = Font(size=10, name="Calibri", color=C_NAVY)
+                else:
+                    cell.fill = alt
+                    cell.font = REG9
+
+        # Summenzeile
+        if ws4.max_row >= 3:
+            sr4 = ws4.max_row + 1
+            ws4.row_dimensions[sr4].height = 20
+            for ci in range(1, len(cols4) + 1):
+                c = ws4.cell(row=sr4, column=ci)
+                c.fill   = _fill(C_NAVY)
+                c.border = _thin_border()
+                c.font   = HDR_FONT
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            ws4.cell(row=sr4, column=1, value="GESAMT").alignment = Alignment(
+                horizontal="left", vertical="center", indent=1)
+            ws4.cell(row=sr4, column=2,
+                     value=sum(l.shift_count for l in report.location_summary))
+            th_c = ws4.cell(row=sr4, column=3,
+                            value=round(sum(l.total_hours for l in report.location_summary), 2))
+            th_c.number_format = '#,##0.00" h"'
+            ws4.cell(row=sr4, column=4, value=100.0).number_format = '0.0"%"'
+
         _autofit(ws4)
+
+        # Balkendiagramm Stunden pro Standort
+        if report.location_summary:
+            n_loc   = len(report.location_summary)
+            bar4    = BarChart()
+            bar4.type   = "col"
+            bar4.title  = "Offizielle Stunden pro Standort"
+            bar4.y_axis.title = "Stunden"
+            bar4.style  = 10
+            bar4.width  = 18
+            bar4.height = 12
+            h_ref4 = Reference(ws4, min_col=3, min_row=2, max_row=2 + n_loc)
+            c_ref4 = Reference(ws4, min_col=1, min_row=3, max_row=2 + n_loc)
+            bar4.add_data(h_ref4, titles_from_data=True)
+            bar4.set_categories(c_ref4)
+            bar4.series[0].graphicalProperties.solidFill = "1E3A5F"
+            chart_row4 = ws4.max_row + 2
+            ws4.add_chart(bar4, f"A{chart_row4}")
+
+            # Tortendiagramm rechts daneben
+            pie4        = PieChart()
+            pie4.title  = "Verteilung nach Standort"
+            pie4.style  = 10
+            pie4.width  = 14
+            pie4.height = 12
+            p_ref4 = Reference(ws4, min_col=3, min_row=2, max_row=2 + n_loc)
+            l_ref4 = Reference(ws4, min_col=1, min_row=3, max_row=2 + n_loc)
+            pie4.add_data(p_ref4, titles_from_data=True)
+            pie4.set_categories(l_ref4)
+            PIE_COLORS = ["1E3A5F", "C8A84B", "0D9488", "7C3AED", "DC2626",
+                          "2563EB", "D97706", "059669"]
+            for i in range(min(n_loc, len(PIE_COLORS))):
+                pt = DataPoint(idx=i)
+                pt.graphicalProperties.solidFill = PIE_COLORS[i % len(PIE_COLORS)]
+                pie4.series[0].dPt.append(pt)
+            ws4.add_chart(pie4, f"J{chart_row4}")
+
+        # ═══════════════════════════════════════════════════════
+        # SHEET 5 — TRENDANALYSE + LINIENDIAGRAMM
+        # ═══════════════════════════════════════════════════════
+        ws5       = wb.create_sheet("📈 Trend")
+        ws5.sheet_view.showGridLines = False
+        ws5.freeze_panes = "A3"
+
+        ws5.row_dimensions[1].height = 28
+        ws5.merge_cells("A1:E1")
+        th5 = ws5["A1"]
+        th5.value     = "TRENDANALYSE"
+        th5.font      = Font(bold=True, size=13, color=C_WHITE, name="Calibri")
+        th5.fill      = _fill(C_NAVY)
+        th5.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+        ws5.row_dimensions[2].height = 24
+        cols5 = ["Periode", "Offizielle Std. (h)", "Ausstehend (h)", "Gesamt (h)"]
+        for ci, c in enumerate(cols5, 1):
+            cell = ws5.cell(row=2, column=ci, value=c)
+            cell.font      = HDR_FONT
+            cell.fill      = HDR_FILL
+            cell.alignment = HDR_ALN
+            cell.border    = _thin_border()
+
+        for idx, t in enumerate(report.trend_data):
+            ri  = ws5.max_row + 1
+            ws5.row_dimensions[ri].height = 18
+            alt = _fill(C_ROW_ALT) if ri % 2 == 0 else _fill(C_ROW_WHITE)
+            tot = round((t.official_hours or 0) + (t.pending_hours or 0), 2)
+            vals = [t.period_label,
+                    round(t.official_hours or 0, 2),
+                    round(t.pending_hours or 0, 2),
+                    tot]
+            for ci, v in enumerate(vals, 1):
+                cell = ws5.cell(row=ri, column=ci, value=v)
+                cell.border    = _thin_border()
+                cell.alignment = Alignment(
+                    vertical="center",
+                    horizontal="center" if ci > 1 else "left",
+                )
+                if ci == 1:
+                    cell.font = BOLD9
+                    cell.fill = alt
+                elif ci == 2:
+                    cell.fill = _fill(C_GREEN_BG)
+                    cell.font = _font(size=9, color=C_GREEN_D)
+                    cell.number_format = '#,##0.00" h"'
+                elif ci == 3:
+                    cell.fill = _fill(C_ORANGE_BG)
+                    cell.font = REG9
+                    cell.number_format = '#,##0.00" h"'
+                else:
+                    cell.fill = alt
+                    cell.font = REG9
+                    cell.number_format = '#,##0.00" h"'
+
+        # Summenzeile
+        if ws5.max_row >= 3:
+            sr5 = ws5.max_row + 1
+            ws5.row_dimensions[sr5].height = 20
+            for ci in range(1, len(cols5) + 1):
+                c = ws5.cell(row=sr5, column=ci)
+                c.fill   = _fill(C_NAVY)
+                c.border = _thin_border()
+                c.font   = HDR_FONT
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            ws5.cell(row=sr5, column=1, value="GESAMT").alignment = Alignment(
+                horizontal="left", vertical="center", indent=1)
+            for ci in [2, 3, 4]:
+                total = sum(
+                    (ws5.cell(row=r, column=ci).value or 0)
+                    for r in range(3, sr5)
+                    if isinstance(ws5.cell(row=r, column=ci).value, (int, float))
+                )
+                c = ws5.cell(row=sr5, column=ci, value=round(total, 2))
+                c.number_format = '#,##0.00" h"'
+
+        _autofit(ws5)
+
+        # Liniendiagramm Trend
+        if report.trend_data:
+            n_t    = len(report.trend_data)
+            line5  = LineChart()
+            line5.title  = "Stundenentwicklung"
+            line5.y_axis.title = "Stunden"
+            line5.style  = 10
+            line5.width  = 26
+            line5.height = 14
+            off_ref5 = Reference(ws5, min_col=2, min_row=2, max_row=2 + n_t)
+            pnd_ref5 = Reference(ws5, min_col=3, min_row=2, max_row=2 + n_t)
+            cat_ref5 = Reference(ws5, min_col=1, min_row=3, max_row=2 + n_t)
+            line5.add_data(off_ref5, titles_from_data=True)
+            line5.add_data(pnd_ref5, titles_from_data=True)
+            line5.set_categories(cat_ref5)
+            line5.series[0].graphicalProperties.line.solidFill = "1E3A5F"
+            line5.series[0].graphicalProperties.line.width = 25000
+            line5.series[0].smooth = True
+            line5.series[1].graphicalProperties.line.solidFill = "C8A84B"
+            line5.series[1].graphicalProperties.line.width = 20000
+            line5.series[1].smooth = True
+            chart_row5 = ws5.max_row + 2
+            ws5.add_chart(line5, f"A{chart_row5}")
 
         # ── Streamen ──────────────────────────────────────────────────────────
         buf = io.BytesIO()

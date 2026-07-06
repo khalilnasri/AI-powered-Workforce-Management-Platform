@@ -8,6 +8,7 @@
     "dev:all": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev\""
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "playwright": "^1.61.0"
   }
 }
