@@ -19,6 +19,7 @@ export default defineConfig({
       "/attendance":  { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
       "/admin":       { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
       "/planning":    { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
+      "/notifications": { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
       "/ai":          { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
       "/health":      { target: API_TARGET, changeOrigin: true, bypass: htmlBypass },
       "/docs":        { target: API_TARGET, changeOrigin: true },

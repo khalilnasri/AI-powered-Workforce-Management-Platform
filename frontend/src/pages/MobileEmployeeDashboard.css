@@ -68,6 +68,8 @@
   z-index: 50;
 }
 .mb-appbar__title {
+  flex: 1;
+  text-align: center;
   font-family: 'Space Mono', monospace;
   font-size: 11px;
   letter-spacing: 0.26em;
@@ -91,15 +93,143 @@
 }
 .mb-appbar__btn:active { background: var(--mb-card); }
 .mb-appbar__btn svg { width: 1.1rem; height: 1.1rem; }
-.mb-appbar__dot {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 6px;
-  height: 6px;
-  background: var(--mb-accent);
+.mb-appbar__spacer { width: 42px; flex-shrink: 0; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   NOTIFICATION BELL + DROPDOWN
+   ══════════════════════════════════════════════════════════════════════ */
+.mb-notif-wrap { position: relative; }
+
+.mb-notif-trigger {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--mb-card-border);
+  background: transparent;
   border-radius: 50%;
+  color: var(--mb-ink);
+  cursor: pointer;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s;
+}
+.mb-notif-trigger:active { background: var(--mb-card); }
+.mb-notif-trigger svg { width: 1.1rem; height: 1.1rem; }
+
+.mb-notif-badge {
+  position: absolute;
+  top: 3px; right: 3px;
+  min-width: 16px; height: 16px;
+  border-radius: 9999px;
+  background: var(--mb-accent);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--mb-paper);
+  padding: 0 3px;
   pointer-events: none;
+  line-height: 1;
+}
+
+.mb-notif-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(340px, calc(100vw - 32px));
+  background: var(--mb-paper);
+  border: 1px solid var(--mb-card-border);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  z-index: 120;
+  overflow: hidden;
+  animation: mb-notif-pop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes mb-notif-pop {
+  from { opacity: 0; transform: scale(0.97) translateY(-6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.mb-notif-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--mb-card-border);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--mb-ink);
+}
+
+.mb-notif-mark-all {
+  border: none;
+  background: none;
+  color: var(--mb-green);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mb-notif-list { max-height: 320px; overflow-y: auto; }
+
+.mb-notif-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--mb-muted-4);
+}
+
+.mb-notif-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.7rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--mb-card-border);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.mb-notif-item:last-child { border-bottom: none; }
+.mb-notif-item--unread { background: rgba(22, 163, 74, 0.08); }
+
+.mb-notif-item__category {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mb-accent);
+}
+.mb-notif-item__title { font-size: 0.8125rem; font-weight: 600; color: var(--mb-ink); }
+.mb-notif-item__body { font-size: 0.75rem; color: var(--mb-muted-4); }
+.mb-notif-item__time { font-size: 0.68rem; color: var(--mb-muted-4); }
+
+.mb-notif-view-all {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: none;
+  border-top: 1px solid var(--mb-card-border);
+  background: rgba(0, 0, 0, 0.02);
+  color: var(--mb-green);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Highlighted session card (deep-linked from a notification) */
+.mb-session-card--highlight {
+  outline: 2px solid var(--mb-green);
+  outline-offset: 2px;
+  animation: mb-notif-highlight-fade 3s ease forwards;
+}
+@keyframes mb-notif-highlight-fade {
+  0%   { background: rgba(22, 163, 74, 0.1); }
+  80%  { background: rgba(22, 163, 74, 0.1); }
+  100% { background: transparent; }
 }
 
 /* ── Main ── */
@@ -151,8 +281,126 @@
 }
 .mb-nav__item--active { color: var(--mb-accent); font-weight: 800; }
 .mb-nav__item:active { opacity: 0.7; }
-.mb-nav__icon { width: 21px; height: 21px; display: flex; align-items: center; justify-content: center; margin-bottom: 3px; }
+.mb-nav__icon {
+  position: relative;
+  width: 21px;
+  height: 21px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 3px;
+}
 .mb-nav__icon svg { width: 100%; height: 100%; stroke-width: 1.7; }
+.mb-nav__badge {
+  position: absolute;
+  top: -5px;
+  right: -8px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.55rem;
+  font-weight: 800;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* ── Benachrichtigungen (volle Seite) ── */
+.mb-notifications { display: flex; flex-direction: column; gap: 0.75rem; }
+.mb-notifications__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.mb-notifications__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--mb-ink);
+}
+.mb-notifications__sub {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--mb-muted-4);
+}
+.mb-notifications__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+.mb-notifications__refresh {
+  border: none;
+  background: var(--mb-card);
+  color: var(--mb-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+}
+.mb-notifications__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--mb-muted-4);
+  background: var(--mb-card);
+  border-radius: var(--mb-radius);
+  box-shadow: var(--mb-shadow);
+}
+.mb-notifications__empty svg { width: 2rem; height: 2rem; opacity: 0.45; }
+.mb-notifications__empty p { margin: 0; font-weight: 700; color: var(--mb-ink); }
+.mb-notifications__empty span { font-size: 0.8rem; line-height: 1.45; }
+.mb-notifications__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.mb-notifications__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.9rem 1rem;
+  border: none;
+  border-radius: var(--mb-radius);
+  background: var(--mb-card);
+  box-shadow: var(--mb-shadow);
+  text-align: left;
+}
+.mb-notifications__item--unread {
+  background: rgba(22, 163, 74, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.2);
+}
+.mb-notifications__category {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--mb-accent);
+}
+.mb-notifications__item-title {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--mb-ink);
+}
+.mb-notifications__item-body {
+  font-size: 0.78rem;
+  color: var(--mb-muted-4);
+  line-height: 1.4;
+}
+.mb-notifications__item-time {
+  font-size: 0.68rem;
+  color: var(--mb-muted-4);
+  margin-top: 0.15rem;
+}
 
 /* ── Card ── */
 .mb-card {
@@ -1151,3 +1399,45 @@
 .mb-leave-badge--green  { background: #dcfce7; color: #15803d; }
 .mb-leave-badge--red    { background: #fee2e2; color: #b91c1c; }
 .mb-leave-badge--orange { background: #fef3c7; color: #92400e; }
+
+/* ── Language selector (profile) ── */
+.mb-lang-wrap {
+  width: 100%;
+  background: white;
+  border-radius: var(--mb-radius);
+  padding: 1rem 1.1rem;
+  box-shadow: var(--mb-shadow);
+}
+.mb-lang-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mb-text-muted);
+  margin-bottom: 0.65rem;
+}
+.mb-lang-options {
+  display: flex;
+  gap: 0.5rem;
+}
+.mb-lang-btn {
+  flex: 1;
+  border: 1.5px solid var(--mb-border);
+  border-radius: 10px;
+  padding: 0.55rem 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--mb-text-muted);
+  background: var(--mb-bg);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.mb-lang-btn--active {
+  border-color: var(--mb-green);
+  background: #ecfdf5;
+  color: var(--mb-green-dark);
+}
+.mb-lang-btn:not(.mb-lang-btn--active):active {
+  background: #f3f4f6;
+}

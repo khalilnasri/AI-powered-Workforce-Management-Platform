@@ -3,7 +3,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiClient, clearToken } from "../apiClient";
 import { MobileEmployeeDashboard } from "./MobileEmployeeDashboard";
+import { NotificationDropdown } from "../components/NotificationDropdown";
+import { useNotifications } from "../utils/useNotifications";
+import { LanguageProvider, useLanguage } from "../i18n/LanguageContext";
+import { notifBodyLines, notifCategory, formatNotifRelativeTime } from "../utils/notificationDisplay";
 import "./EmployeeDashboard.css";
+
+const NOTIF_ENTITY_TAB = {
+  work_session: "worked",
+  shift_plan: "shifts",
+  leave_request: "leave",
+  attendance_log: "overview",
+};
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 640);
@@ -96,6 +107,13 @@ const IcoLogout = () => (
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     <polyline points="16 17 21 12 16 7" />
     <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+const IcoBell = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+    strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
   </svg>
 );
 const IcoSessions = () => (
@@ -308,29 +326,37 @@ function localizeAttendanceMessage(msg) {
   return ATTENDANCE_MSG_DE[t] ?? msg;
 }
 
-// ── Nav config ────────────────────────────────────────────────────────────────
-const NAV_ITEMS = [
-  { id: "overview", label: "Dashboard",       Icon: IcoHome     },
-  { id: "checkin",  label: "Stempeln & GPS",  Icon: IcoCheckin  },
-  { id: "worked",   label: "Arbeitszeit",     Icon: IcoWorked   },
-  { id: "shifts",   label: "Meine Schichten", Icon: IcoShifts   },
-  { id: "leave",    label: "Urlaub",          Icon: IcoVacation },
-  { id: "sessions", label: "Meine Sessions",  Icon: IcoSessions },
-  { id: "logs",     label: "Stempelprotokoll", Icon: IcoLogs     },
-];
-
-// ── Entry point: mobile vs desktop ───────────────────────────────────────────
+// ── Nav config (mobile/desktop labels via i18n in components) ─────────────────
 export function EmployeeDashboard() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileEmployeeDashboard /> : <DesktopEmployeeDashboard />;
+  return (
+    <LanguageProvider>
+      {isMobile ? <MobileEmployeeDashboard /> : <DesktopEmployeeDashboard />}
+    </LanguageProvider>
+  );
 }
 
 // ── Desktop Dashboard ─────────────────────────────────────────────────────────
 function DesktopEmployeeDashboard() {
   const navigate = useNavigate();
+  const notif = useNotifications();
+  const { t, locale } = useLanguage();
+
+  const navItems = useMemo(
+    () => [
+      { id: "overview", label: t("desktop.nav.overview"), Icon: IcoHome },
+      { id: "worked", label: t("desktop.nav.worked"), Icon: IcoWorked },
+      { id: "shifts", label: t("desktop.nav.shifts"), Icon: IcoShifts },
+      { id: "leave", label: t("desktop.nav.leave"), Icon: IcoVacation },
+      { id: "notifications", label: t("desktop.nav.notifications"), Icon: IcoBell },
+      { id: "logs", label: t("desktop.nav.logs"), Icon: IcoLogs },
+    ],
+    [t],
+  );
 
   // ── Tab state (Standard: Dashboard mit Kalender & Schnellaktionen) ───────
   const [activeTab, setActiveTab] = useState("overview");
+  const [highlightSessionId, setHighlightSessionId] = useState(null);
   /** Monat für Kalender (1. des Monats) */
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const n = new Date();
@@ -499,8 +525,20 @@ function DesktopEmployeeDashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "sessions" || activeTab === "worked") fetchMySessions();
+    if (activeTab === "worked") fetchMySessions();
   }, [activeTab, fetchMySessions]);
+
+  useEffect(() => {
+    if (activeTab === "notifications") notif.openList();
+  }, [activeTab, notif.openList]);
+
+  useEffect(() => {
+    if (activeTab !== "worked" || highlightSessionId == null) return undefined;
+    const el = document.getElementById(`session-${highlightSessionId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setHighlightSessionId(null), 3000);
+    return () => clearTimeout(t);
+  }, [activeTab, highlightSessionId, mySessions]);
 
   useEffect(() => {
     if (activeTab === "leave" || activeTab === "overview") fetchMyLeaveRequests();
@@ -765,7 +803,7 @@ function DesktopEmployeeDashboard() {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 
-  const activeLabel   = NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? "Dashboard";
+  const activeLabel   = navItems.find((n) => n.id === activeTab)?.label ?? t("desktop.nav.overview");
   const liveShiftParts = formatElapsedHmsParts(activeCheckinIso);
 
   const monthHoursRemain =
@@ -793,7 +831,7 @@ function DesktopEmployeeDashboard() {
         </div>
 
         <div className="ed-sidebar__nav">
-          {NAV_ITEMS.map(({ id, label, Icon }) => (
+          {navItems.map(({ id, label, Icon }) => (
             <button
               key={id}
               type="button"
@@ -833,6 +871,23 @@ function DesktopEmployeeDashboard() {
             <h1 className="ed-topbar__title">{activeLabel}</h1>
             <span className="ed-topbar__date">{todayLabel}</span>
           </div>
+          <NotificationDropdown
+            variant="desktop"
+            notif={notif}
+            onOpenEntity={(n) => {
+              const tab = NOTIF_ENTITY_TAB[n.entity_type];
+              if (tab) {
+                setActiveTab(tab);
+                if (n.entity_type === "work_session") setHighlightSessionId(n.entity_id);
+              } else {
+                setActiveTab("notifications");
+              }
+            }}
+            onViewAll={() => {
+              setActiveTab("notifications");
+              notif.openList();
+            }}
+          />
           <div className="ed-topbar__user">
             <div className="ed-topbar__avatar">{data.name?.[0]?.toUpperCase() ?? "?"}</div>
             <div className="ed-topbar__user-info">
@@ -922,11 +977,7 @@ function DesktopEmployeeDashboard() {
                   <div className="ed-overview__primary">
                     <div className="ed-card ed-overview__hero">
                       <p className="ed-hint ed-overview__lede">
-                        Stempeln mit Browser-Standort. Details unter{" "}
-                        <button type="button" className="ed-inline-link" onClick={() => setActiveTab("checkin")}>
-                          Stempeln &amp; GPS
-                        </button>
-                        .
+                        Stempeln direkt hier mit Browser-Standort — Einstempeln und Ausstempeln wechseln sich ab.
                       </p>
 
                       {statusLoading ? (
@@ -1202,93 +1253,6 @@ function DesktopEmployeeDashboard() {
             </div>
           )}
 
-          {/* ═══ CHECK-IN / OUT ══════════════════════════════════════════ */}
-          {activeTab === "checkin" && (
-            <div className="ed-section">
-              <div className="ed-section-title"><h2>Stempeln mit GPS</h2></div>
-              <div className="ed-dashboard-grid">
-
-                {/* Aktionen */}
-                <div className="ed-card ed-card--grow">
-                  <p className="ed-hint">
-                    Nutzt deinen Browser-Standort. Einstempeln und Ausstempeln wechseln sich ab.
-                    Der Server erzwingt diese Reihenfolge.
-                  </p>
-
-                  {statusLoading ? (
-                    <p className="ed-hint">Status wird geladen…</p>
-                  ) : statusError ? (
-                    <p className="ed-alert" role="alert">{statusError}</p>
-                  ) : attendanceStatus ? (
-                    <div className="ed-status-row">
-                      <span className={`ed-badge ed-badge--${isCheckedIn ? "green" : "gray"}`}>
-                        {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
-                      </span>
-                      <p className="ed-status-message">{localizeAttendanceMessage(attendanceStatus.message)}</p>
-                    </div>
-                  ) : null}
-
-                  <div className="ed-actions">
-                    {attendanceStatus?.can_checkin && (
-                      <button
-                        type="button"
-                        className="ed-btn ed-btn--checkin"
-                        onClick={() => runGpsThenPost(CHECKIN_URL)}
-                        disabled={gpsBusy || statusLoading || Boolean(statusError)}
-                      >
-                        {gpsBusy ? "Standort wird ermittelt…" : "✔ Einstempeln"}
-                      </button>
-                    )}
-                    {attendanceStatus?.can_checkout && (
-                      <button
-                        type="button"
-                        className="ed-btn ed-btn--checkout"
-                        onClick={() => runGpsThenPost(CHECKOUT_URL)}
-                        disabled={gpsBusy || statusLoading || Boolean(statusError)}
-                      >
-                        {gpsBusy ? "Standort wird ermittelt…" : "✖ Ausstempeln"}
-                      </button>
-                    )}
-                  </div>
-
-                  {attendanceError && (
-                    <p className="ed-alert" role="alert">{attendanceError}</p>
-                  )}
-                </div>
-
-                {/* GPS Info */}
-                <div className="ed-card ed-card--sidebar">
-                  <p className="ed-card-title">GPS-Information</p>
-                  {gpsCoords ? (
-                    <div className="ed-gps-row">
-                      <span className="ed-gps-label">Latitude</span>
-                      <span className="ed-gps-value">{gpsCoords.lat}</span>
-                      <span className="ed-gps-label">Longitude</span>
-                      <span className="ed-gps-value">{gpsCoords.lng}</span>
-                    </div>
-                  ) : (
-                    <p className="ed-no-gps">Noch keine GPS-Daten — zuerst ein- oder ausstempeln.</p>
-                  )}
-
-                  {areaStatus === "inside" && (
-                    <p className="ed-fence ed-fence--inside" role="status">Im Firmenbereich</p>
-                  )}
-                  {areaStatus === "outside" && (
-                    <p className="ed-fence ed-fence--outside" role="alert">Außerhalb des Firmenbereichs</p>
-                  )}
-                  {gpsError && (
-                    <p className="ed-alert" role="alert">{gpsError}</p>
-                  )}
-                  {attendanceResponse && (
-                    <p className="ed-fence ed-fence--inside" role="status">
-                      {attendanceResponse.type === "checkout" ? "Ausstempelung gespeichert." : "Einstempelung gespeichert."}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* ═══ WORKED TIME ═════════════════════════════════════════════ */}
           {activeTab === "worked" && (() => {
             const loading = workedLoading || sessionsLoading;
@@ -1321,7 +1285,10 @@ function DesktopEmployeeDashboard() {
               const checkinDate = fmtDate(s.checkin_time);
 
               return (
-                <div className={cardCls}>
+                <div
+                  className={`${cardCls}${highlightSessionId === s.id ? " wt-scard--highlight" : ""}`}
+                  id={`session-${s.id}`}
+                >
                   <div className="wt-card__head">
                     <div className="wt-card__date">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -1670,133 +1637,72 @@ function DesktopEmployeeDashboard() {
             </div>
           )}
 
-          {/* ═══ MEINE SESSIONS ══════════════════════════════════════════ */}
-          {activeTab === "sessions" && (
-            <div className="ed-section wt-section">
-              <div className="wt-sessions-toolbar">
-                <h2 className="wt-sessions-toolbar__title">Meine Sessions</h2>
-                <button type="button" className="wt-refresh-btn"
-                  onClick={fetchMySessions} disabled={sessionsLoading}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64L3 21v-6h6l-2.73 2.73A7 7 0 1 0 5 12"/></svg>
-                  {sessionsLoading ? "Lädt…" : "Aktualisieren"}
-                </button>
-              </div>
-
-              {sessionsLoading ? (
-                <div className="wt-loading">Sessions werden geladen…</div>
-              ) : sessionsError ? (
-                <p className="ed-alert" role="alert">{sessionsError}</p>
-              ) : mySessions.length === 0 ? (
-                <div className="wt-empty">
-                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                  <span>Noch keine Sessions. Nach dem ersten Ausstempeln erscheinen sie hier.</span>
-                </div>
-              ) : (
-                <>
-                  {/* Korrektur-Benachrichtigungen */}
-                  {mySessions.filter(s => s.status === "corrected").length > 0 && (
-                    <div className="wt-notif-group">
-                      <div className="wt-notif-group__title">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                        Admin-Korrekturen
-                      </div>
-                      {mySessions.filter(s => s.status === "corrected").map(s => {
-                        const ciDate = s.checkin_time
-                          ? new Date(s.checkin_time).toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long" })
-                          : "—";
-                        const coTime = s.checkout_time
-                          ? new Date(s.checkout_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-                          : "—";
-                        const coDate = s.checkout_time
-                          ? new Date(s.checkout_time).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" })
-                          : "—";
-                        return (
-                          <div key={`notif-${s.id}`} className="wt-notif-card">
-                            <div className="wt-notif-card__icon">
-                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                            </div>
-                            <div className="wt-notif-card__body">
-                              <div className="wt-notif-card__title">
-                                Admin hat deine Schicht vom {ciDate} korrigiert
-                              </div>
-                              <div className="wt-notif-card__detail">
-                                Ausstempelzeit wurde auf <strong>{coTime} Uhr ({coDate})</strong> gesetzt
-                                · Dauer: <strong>{formatDurationSeconds(s.duration_seconds)}</strong>
-                              </div>
-                              {s.admin_note && (
-                                <div className="wt-notif-card__note">
-                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                  {s.admin_note}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Alle Sessions als Karten */}
-                  <div className="wt-cards">
-                    {mySessions.map((s) => {
-                      const ciDate = s.checkin_time
-                        ? new Date(s.checkin_time).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })
-                        : "—";
-                      const STATUS_CFG = {
-                        approved:  { cls: "wt-scard__badge--approved",  label: "✓ Genehmigt"   },
-                        corrected: { cls: "wt-scard__badge--corrected", label: "✎ Korrigiert"  },
-                        rejected:  { cls: "wt-scard__badge--rejected",  label: "✖ Abgelehnt"   },
-                        pending:   { cls: "wt-scard__badge--pending",   label: "⏳ Ausstehend" },
-                      };
-                      const cfg = STATUS_CFG[s.status] ?? STATUS_CFG.pending;
-                      return (
-                        <div key={s.id} className={`wt-scard ${s.status === "corrected" ? "wt-scard--corrected" : ""} ${s.status === "rejected" ? "wt-scard--rejected" : ""}`}>
-                          <div className="wt-scard__head">
-                            <div className="wt-scard__date">
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                              {ciDate}
-                            </div>
-                            <span className={`wt-scard__badge ${cfg.cls}`}>{cfg.label}</span>
-                          </div>
-                          <div className="wt-scard__timeline">
-                            <div className="wt-card__time-block">
-                              <div className="wt-card__time-label">Eingestempelt</div>
-                              <div className="wt-card__time-val">
-                                {s.checkin_time
-                                  ? new Date(s.checkin_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-                                  : "—"}
-                              </div>
-                            </div>
-                            <div className="wt-card__arrow">
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                            </div>
-                            <div className="wt-card__time-block">
-                              <div className="wt-card__time-label">
-                                Ausgestempelt {s.status === "corrected" && <span className="wt-scard__corrected-tag">korrigiert</span>}
-                              </div>
-                              <div className="wt-card__time-val">
-                                {s.checkout_time
-                                  ? new Date(s.checkout_time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-                                  : <em style={{ color: "#94a3b8" }}>offen</em>}
-                              </div>
-                            </div>
-                            <div className="wt-card__dur">
-                              <div className="wt-card__dur-label">Dauer</div>
-                              <div className="wt-card__dur-val">{formatDurationSeconds(s.duration_seconds)}</div>
-                            </div>
-                          </div>
-                          {(s.rejection_reason || s.admin_note) && (
-                            <div className={`wt-scard__info ${s.status === "rejected" ? "wt-scard__info--red" : "wt-scard__info--blue"}`}>
-                              {s.rejection_reason && <span>Grund: {s.rejection_reason}</span>}
-                              {s.admin_note && <span>Notiz: {s.admin_note}</span>}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+          {/* ═══ BENACHRICHTIGUNGEN ══════════════════════════════════════ */}
+          {activeTab === "notifications" && (
+            <div className="ed-section">
+              <div className="ed-notifications-page">
+                <div className="ed-notifications-page__header">
+                  <div>
+                    <h2 className="ed-notifications-page__title">{t("notifications.title")}</h2>
+                    <p className="ed-hint">{t("notifications.sub")}</p>
                   </div>
-                </>
-              )}
+                  <div className="ed-notifications-page__actions">
+                    {notif.unreadCount > 0 && (
+                      <button type="button" className="ed-notif-mark-all" onClick={notif.markAllRead}>
+                        {t("common.markAllRead")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="wt-refresh-btn"
+                      onClick={notif.openList}
+                      disabled={notif.listLoading}
+                    >
+                      {notif.listLoading ? t("common.loading") : t("common.refresh")}
+                    </button>
+                  </div>
+                </div>
+
+                {notif.listLoading && notif.notifications.length === 0 ? (
+                  <div className="ed-notif-empty ed-notifications-page__empty">{t("common.loading")}</div>
+                ) : notif.notifications.length === 0 ? (
+                  <div className="ed-notifications-page__empty">
+                    <IcoBell />
+                    <p>{t("notifications.empty")}</p>
+                    <span className="ed-hint">{t("notifications.emptyHint")}</span>
+                  </div>
+                ) : (
+                  <div className="ed-notifications-page__list">
+                    {notif.notifications.map((n) => (
+                      <button
+                        type="button"
+                        key={n.id}
+                        className={`ed-notifications-page__item${!n.read_at ? " ed-notifications-page__item--unread" : ""}`}
+                        onClick={() => {
+                          if (!n.read_at) notif.markRead(n.id);
+                          const tab = NOTIF_ENTITY_TAB[n.entity_type];
+                          if (tab) {
+                            setActiveTab(tab);
+                            if (n.entity_type === "work_session") setHighlightSessionId(n.entity_id);
+                          }
+                        }}
+                      >
+                        <div className="ed-notifications-page__item-main">
+                          <span className="ed-notifications-page__item-category">{notifCategory(n.type, t)}</span>
+                          <span className="ed-notifications-page__item-title">{n.title}</span>
+                          {notifBodyLines(n.body).map((line) => (
+                            <span key={line} className="ed-notifications-page__item-body">{line}</span>
+                          ))}
+                          <span className="ed-notifications-page__item-meta">
+                            {formatNotifRelativeTime(n.created_at, locale)}
+                          </span>
+                        </div>
+                        {!n.read_at && <span className="ed-notifications-page__dot" aria-hidden />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1816,7 +1722,7 @@ function DesktopEmployeeDashboard() {
                     <span className="ed-empty-state__icon">🕐</span>
                     <p className="ed-empty-state__text">Noch keine Stempelungen vorhanden.</p>
                     <p className="ed-hint" style={{ textAlign: "center" }}>
-                      Gehe zu „Stempeln & GPS“, um deine erste Stempelung zu machen.
+                      Stemple auf dem Dashboard ein, um deine erste Stempelung zu machen.
                     </p>
                   </div>
                 ) : (
@@ -1860,11 +1766,11 @@ function DesktopEmployeeDashboard() {
       {/* ═══ MOBILE BOTTOM NAV ════════════════════════════════════════════ */}
       <nav className="ed-mobile-nav" aria-label="Mobile Navigation">
         {[
-          { id: "overview", label: "Home",       Icon: IcoHome     },
-          { id: "checkin",  label: "Stempeln",   Icon: IcoCheckin  },
-          { id: "worked",   label: "Arbeitszeit", Icon: IcoWorked  },
-          { id: "leave",    label: "Urlaub",     Icon: IcoVacation },
-          { id: "logs",     label: "Protokoll",  Icon: IcoLogs     },
+          { id: "overview", label: t("desktop.navCompact.home"), Icon: IcoHome },
+          { id: "worked", label: t("desktop.navCompact.worked"), Icon: IcoWorked },
+          { id: "leave", label: t("desktop.navCompact.leave"), Icon: IcoVacation },
+          { id: "notifications", label: t("desktop.navCompact.messages"), Icon: IcoBell },
+          { id: "logs", label: t("desktop.navCompact.logs"), Icon: IcoLogs },
         ].map(({ id, label, Icon }) => (
           <button
             key={id}
@@ -1872,7 +1778,6 @@ function DesktopEmployeeDashboard() {
             className={[
               "ed-mobile-nav__item",
               activeTab === id ? "ed-mobile-nav__item--active" : "",
-              id === "checkin" && isCheckedIn ? "ed-mobile-nav__item--checkin-active" : "",
             ].filter(Boolean).join(" ")}
             onClick={() => setActiveTab(id)}
           >

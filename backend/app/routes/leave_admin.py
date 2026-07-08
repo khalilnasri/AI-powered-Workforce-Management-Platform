@@ -14,6 +14,8 @@ from app.config.database import get_db
 from app.models.employee import Employee
 from app.models.leave_request import LeaveRequest
 from app.schemas.leave import LeaveRequestOut
+from app.services.notification_messages import leave_approved, leave_rejected
+from app.services.notification_service import create_notification
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -66,6 +68,17 @@ def approve_leave_request(
     row.decided_by_id = admin.id
     row.decided_at = datetime.now(UTC)
     row.rejection_reason = None
+    ntype, title, body = leave_approved(row.start_date, row.end_date, admin)
+    create_notification(
+        db,
+        employee_id=row.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="leave_request",
+        entity_id=row.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(row)
     return _to_out(row, db)
@@ -92,6 +105,19 @@ def reject_leave_request(
     row.decided_by_id = admin.id
     row.decided_at = datetime.now(UTC)
     row.rejection_reason = body.rejection_reason.strip()
+    ntype, title, body_text = leave_rejected(
+        row.start_date, row.end_date, admin, row.rejection_reason,
+    )
+    create_notification(
+        db,
+        employee_id=row.employee_id,
+        type=ntype,
+        title=title,
+        body=body_text,
+        entity_type="leave_request",
+        entity_id=row.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(row)
     return _to_out(row, db)

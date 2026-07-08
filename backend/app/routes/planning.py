@@ -8,9 +8,12 @@ from app.auth.admin_deps import require_admin
 from app.auth.deps import get_current_employee
 from app.config.database import get_db
 from app.models.employee import Employee
+from app.models.leave_request import LeaveRequest
 from app.models.location import WorkplaceLocation
 from app.models.planning import ShiftPlan
 from app.schemas.planning import ShiftCreateRequest, ShiftResponse, ShiftUpdateRequest
+from app.services.notification_messages import shift_assigned, shift_deleted, shift_updated
+from app.services.notification_service import create_notification
 
 router = APIRouter(prefix="/planning", tags=["planning"])
 
@@ -57,6 +60,34 @@ def _validate_references(db: Session, employee_id: int, location_id: int | None)
         )
 
 
+def _location_name(db: Session, location_id: int | None) -> str | None:
+    if location_id is None:
+        return None
+    loc = db.get(WorkplaceLocation, location_id)
+    return loc.name if loc else None
+
+
+def _validate_no_leave_conflict(db: Session, employee_id: int, shift_date: date) -> None:
+    """Verhindert Schichtplanung an einem Tag, an dem der Mitarbeiter genehmigten Urlaub hat."""
+    conflict = db.scalar(
+        select(LeaveRequest).where(
+            LeaveRequest.employee_id == employee_id,
+            LeaveRequest.status == "approved",
+            LeaveRequest.start_date <= shift_date,
+            LeaveRequest.end_date >= shift_date,
+        )
+    )
+    if conflict is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Mitarbeiter hat vom {conflict.start_date:%d.%m.%Y} bis "
+                f"{conflict.end_date:%d.%m.%Y} genehmigten Urlaub — in diesem Zeitraum "
+                "kann keine Schicht eingeplant werden."
+            ),
+        )
+
+
 # ── Admin-Routen ──────────────────────────────────────────────────────────────
 
 @router.get("/shifts", response_model=list[ShiftResponse])
@@ -76,10 +107,11 @@ def list_shifts(
 def create_shift(
     body: ShiftCreateRequest,
     db: Session = Depends(get_db),
-    _: Employee = Depends(require_admin),
+    admin: Employee = Depends(require_admin),
 ):
     """Neue Schicht anlegen."""
     _validate_references(db, body.employee_id, body.location_id)
+    _validate_no_leave_conflict(db, body.employee_id, body.shift_date)
 
     shift = ShiftPlan(
         employee_id=body.employee_id,
@@ -90,6 +122,19 @@ def create_shift(
         note=body.note,
     )
     db.add(shift)
+    db.flush()
+    loc_name = _location_name(db, shift.location_id)
+    ntype, title, body = shift_assigned(shift, admin, location_name=loc_name)
+    create_notification(
+        db,
+        employee_id=shift.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="shift_plan",
+        entity_id=shift.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(shift)
 
@@ -102,7 +147,7 @@ def update_shift(
     shift_id: int,
     body: ShiftUpdateRequest,
     db: Session = Depends(get_db),
-    _: Employee = Depends(require_admin),
+    admin: Employee = Depends(require_admin),
 ):
     """Bestehende Schicht aktualisieren."""
     shift = db.get(ShiftPlan, shift_id)
@@ -110,6 +155,13 @@ def update_shift(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schicht nicht gefunden.")
 
     _validate_references(db, body.employee_id, body.location_id)
+    _validate_no_leave_conflict(db, body.employee_id, body.shift_date)
+
+    old_employee_id = shift.employee_id
+    old_date = shift.shift_date
+    old_start = shift.start_time
+    old_end = shift.end_time
+    old_location_id = shift.location_id
 
     shift.employee_id = body.employee_id
     shift.location_id = body.location_id
@@ -117,6 +169,49 @@ def update_shift(
     shift.start_time = body.start_time
     shift.end_time = body.end_time
     shift.note = body.note
+
+    new_loc_name = _location_name(db, shift.location_id)
+    old_loc_name = _location_name(db, old_location_id)
+
+    if old_employee_id != body.employee_id:
+        ntype_old, title_old, body_old = shift_deleted(
+            old_date, old_start, old_end, admin, location_name=old_loc_name,
+        )
+        create_notification(
+            db,
+            employee_id=old_employee_id,
+            type=ntype_old,
+            title=title_old,
+            body=body_old,
+            entity_type="shift_plan",
+            entity_id=shift.id,
+            actor_id=admin.id,
+        )
+        ntype_new, title_new, body_new = shift_assigned(
+            shift, admin, location_name=new_loc_name,
+        )
+        create_notification(
+            db,
+            employee_id=shift.employee_id,
+            type=ntype_new,
+            title=title_new,
+            body=body_new,
+            entity_type="shift_plan",
+            entity_id=shift.id,
+            actor_id=admin.id,
+        )
+    else:
+        ntype, title, body = shift_updated(shift, admin, location_name=new_loc_name)
+        create_notification(
+            db,
+            employee_id=shift.employee_id,
+            type=ntype,
+            title=title,
+            body=body,
+            entity_type="shift_plan",
+            entity_id=shift.id,
+            actor_id=admin.id,
+        )
     db.commit()
     db.refresh(shift)
 
@@ -128,12 +223,27 @@ def update_shift(
 def delete_shift(
     shift_id: int,
     db: Session = Depends(get_db),
-    _: Employee = Depends(require_admin),
+    admin: Employee = Depends(require_admin),
 ):
     """Schicht löschen."""
     shift = db.get(ShiftPlan, shift_id)
     if shift is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schicht nicht gefunden.")
+
+    loc_name = _location_name(db, shift.location_id)
+    ntype, title, body = shift_deleted(
+        shift.shift_date, shift.start_time, shift.end_time, admin, location_name=loc_name,
+    )
+    create_notification(
+        db,
+        employee_id=shift.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="shift_plan",
+        entity_id=shift.id,
+        actor_id=admin.id,
+    )
     db.delete(shift)
     db.commit()
 
