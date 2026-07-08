@@ -4,21 +4,23 @@ import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Circle, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { apiClient, clearToken } from "../apiClient";
+import { NotificationDropdown } from "../components/NotificationDropdown";
+import { LanguageSelector } from "../components/LanguageSelector";
+import { useLanguage } from "../i18n/LanguageContext";
+import { localeDateTag } from "../i18n/locales";
+import { useNotifications } from "../utils/useNotifications";
+import { notifBodyLines, notifCategory, formatNotifRelativeTime } from "../utils/notificationDisplay";
 import "./MobileEmployeeDashboard.css";
 import "./MobileArbeitszeit.css";
 
+const NOTIF_ENTITY_TAB = {
+  work_session: { tab: "statistik" },
+  shift_plan: { tab: "planung", planungTab: "schichten" },
+  leave_request: { tab: "planung", planungTab: "urlaub" },
+  attendance_log: { tab: "dashboard" },
+};
+
 // ── Icons ──────────────────────────────────────────────────────────────────────
-const IcoMenu = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-    <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-  </svg>
-);
-const IcoBell = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-    <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-  </svg>
-);
 const IcoDashboard = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/>
@@ -28,11 +30,6 @@ const IcoDashboard = () => (
 const IcoClock = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-  </svg>
-);
-const IcoChart = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
   </svg>
 );
 const IcoPerson = () => (
@@ -93,6 +90,12 @@ const IcoHome = () => (
     <polyline points="9 22 9 12 15 12 15 22"/>
   </svg>
 );
+const IcoBell = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+  </svg>
+);
 const IcoEnter = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
@@ -124,10 +127,10 @@ function MapFly({ lat, lng }) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function fmtTime(iso) {
+function fmtTime(iso, dateTag = "de-DE") {
   if (!iso) return null;
   const d = new Date(iso);
-  return isNaN(d) ? null : d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  return isNaN(d) ? null : d.toLocaleTimeString(dateTag, { hour: "2-digit", minute: "2-digit" });
 }
 
 function fmtDuration(secs) {
@@ -156,22 +159,32 @@ function AzHms({ seconds, variant = "big" }) {
   );
 }
 
-function AzShiftCard({ session }) {
+function AzShiftCard({ session, highlighted }) {
+  const { t, locale } = useLanguage();
+  const dateTag = localeDateTag(locale);
   const status = session.status;
   const isCorrected = status === "corrected";
   const isLong      = session.duration_seconds > 12 * 3600;
 
   const fmtT = (iso) => iso
-    ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-    : "—";
+    ? new Date(iso).toLocaleTimeString(dateTag, { hour: "2-digit", minute: "2-digit" })
+    : t("common.dash");
   const fmtD = (iso) => iso
-    ? new Date(iso).toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "long", year: "numeric" })
-    : "—";
+    ? new Date(iso).toLocaleDateString(dateTag, { weekday: "short", day: "numeric", month: "long", year: "numeric" })
+    : t("common.dash");
 
-  const chipLabel = { pending: "Ausstehend", approved: "Genehmigt", corrected: "Korrigiert", rejected: "Abgelehnt" }[status] ?? status;
+  const chipLabel = {
+    pending: t("status.pending"),
+    approved: t("status.approved"),
+    corrected: t("status.corrected"),
+    rejected: t("status.rejected"),
+  }[status] ?? status;
 
   return (
-    <div className={`az-card az-card--${status}`}>
+    <div
+      className={`az-card az-card--${status}${highlighted ? " mb-session-card--highlight" : ""}`}
+      id={`session-${session.id}`}
+    >
       <div className="az-card__inner">
         {/* top row */}
         <div className="az-card__top">
@@ -182,16 +195,16 @@ function AzShiftCard({ session }) {
         {/* times row */}
         <div className="az-card__times">
           <div className="az-card__time-block">
-            <span className="az-card__time-label">Ein</span>
+            <span className="az-card__time-label">{t("work.in")}</span>
             <span className="az-card__time-val">{fmtT(session.checkin_time)}</span>
           </div>
           <span className="az-card__arrow">→</span>
           <div className="az-card__time-block">
-            <span className="az-card__time-label">Aus</span>
+            <span className="az-card__time-label">{t("work.out")}</span>
             <span className="az-card__time-val">{session.checkout_time ? fmtT(session.checkout_time) : "—"}</span>
           </div>
           <div className="az-card__dur-block">
-            <span className="az-card__dur-label">Dauer</span>
+            <span className="az-card__dur-label">{t("work.duration")}</span>
             <AzHms seconds={session.duration_seconds} variant={status === "pending" ? "sm" : "neutral"} />
           </div>
         </div>
@@ -199,7 +212,7 @@ function AzShiftCard({ session }) {
         {/* original times (corrected only) */}
         {isCorrected && (session.original_checkin_time || session.original_checkout_time) && (
           <div className="az-card__orig">
-            <strong>Original:</strong>{" "}
+            <strong>{t("work.original")}</strong>{" "}
             <span className="az-card__orig-times">
               {fmtD(session.original_checkin_time)}{" "}
               {fmtT(session.original_checkin_time)} → {session.original_checkout_time ? fmtT(session.original_checkout_time) : "—"}
@@ -212,14 +225,12 @@ function AzShiftCard({ session }) {
           <div className="az-card__note">{session.admin_note}</div>
         )}
         {session.rejection_reason && (
-          <div className="az-card__note az-card__note--red">Grund: {session.rejection_reason}</div>
+          <div className="az-card__note az-card__note--red">{t("work.reason")} {session.rejection_reason}</div>
         )}
 
         {/* long-session warning */}
         {status === "pending" && isLong && (
-          <div className="az-card__warn">
-            Möglicherweise vergessen auszustempeln — wartet auf Admin-Korrektur
-          </div>
+          <div className="az-card__warn">{t("work.forgotHint")}</div>
         )}
       </div>
     </div>
@@ -276,9 +287,24 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 // ── Main Component ─────────────────────────────────────────────────────────────
 export function MobileEmployeeDashboard() {
   const navigate = useNavigate();
+  const notif = useNotifications();
+  const { t, locale } = useLanguage();
+  const dateTag = localeDateTag(locale);
+
+  const bottomNav = useMemo(
+    () => [
+      { id: "dashboard", label: t("nav.home"), Icon: IcoHome },
+      { id: "statistik", label: t("nav.work"), Icon: IcoClock },
+      { id: "planung", label: t("nav.planning"), Icon: IcoPlanung },
+      { id: "benachrichtigungen", label: t("nav.messages"), Icon: IcoBell },
+      { id: "profil", label: t("nav.profile"), Icon: IcoPerson },
+    ],
+    [t],
+  );
 
   // Tab
   const [tab, setTab] = useState("dashboard");
+  const [highlightSessionId, setHighlightSessionId] = useState(null);
   // Overlay: null | "checkin" | "checkout"
   const [overlay, setOverlay] = useState(null);
 
@@ -360,6 +386,18 @@ export function MobileEmployeeDashboard() {
   }, [fetchStatus, fetchWorked, fetchLogs, fetchLeaveSummary, fetchShifts, fetchLeaveRequests, fetchMySessions]);
 
   useEffect(() => {
+    if (tab !== "statistik" || highlightSessionId == null) return undefined;
+    const el = document.getElementById(`session-${highlightSessionId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setHighlightSessionId(null), 3000);
+    return () => clearTimeout(t);
+  }, [tab, highlightSessionId, mySessions]);
+
+  useEffect(() => {
+    if (tab === "benachrichtigungen") notif.openList();
+  }, [tab, notif.openList]);
+
+  useEffect(() => {
     if (liveSessionHydratedRef.current || !status) return;
     liveSessionHydratedRef.current = true;
     if (status.status === "checked_in" && status.active_checkin_at) {
@@ -387,7 +425,7 @@ export function MobileEmployeeDashboard() {
         end_date:   leaveTo,
         note:       leaveNote.trim() || null,
       });
-      setLeaveSuccess("Antrag wurde eingereicht!");
+      setLeaveSuccess(t("planning.success"));
       setLeaveFrom("");
       setLeaveTo("");
       setLeaveNote("");
@@ -395,7 +433,7 @@ export function MobileEmployeeDashboard() {
       fetchLeaveSummary();
     } catch (err) {
       const d = err.response?.data?.detail;
-      setLeaveError(typeof d === "string" ? d : "Antrag konnte nicht gesendet werden.");
+      setLeaveError(typeof d === "string" ? d : t("errors.leaveFailed"));
     } finally {
       setLeaveSubmitting(false);
     }
@@ -411,10 +449,10 @@ export function MobileEmployeeDashboard() {
     let coords;
     try {
       coords = await new Promise((resolve, reject) => {
-        if (!navigator.geolocation) { reject(new Error("GPS nicht verfügbar")); return; }
+        if (!navigator.geolocation) { reject(new Error(t("errors.gpsUnavailable"))); return; }
         navigator.geolocation.getCurrentPosition(
           pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-          err => reject(new Error(err.message || "Standortfehler")),
+          err => reject(new Error(err.message || t("errors.locationError"))),
           { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
         );
       });
@@ -470,9 +508,9 @@ export function MobileEmployeeDashboard() {
 
       await Promise.all([fetchWorked(), fetchLogs(), fetchMySessions()]);
     } catch (err) {
-      const msg = err.response?.data?.message ?? err.response?.data?.detail ?? "Stempelung fehlgeschlagen";
+      const msg = err.response?.data?.message ?? err.response?.data?.detail ?? t("errors.stampFailed");
       const isOutside = String(msg).toLowerCase().includes("outside") || String(msg).toLowerCase().includes("außerhalb");
-      setStampError(isOutside ? "Außerhalb des erlaubten Bereichs" : String(msg));
+      setStampError(isOutside ? t("errors.outsideArea") : String(msg));
     } finally {
       setStampBusy(false);
     }
@@ -581,62 +619,26 @@ export function MobileEmployeeDashboard() {
     ? Math.max(0, Math.floor((Date.now() - new Date(activeCheckinIso).getTime()) / 1000))
     : 0;
 
-  const sessionsByDay = useMemo(() => {
-    if (!worked?.sessions?.length) return [];
-    const map = {};
-    for (const s of worked.sessions) {
-      const d = toLocalIso(s.checkin);
-      if (!d) continue;
-      if (!map[d]) map[d] = [];
-      map[d].push(s);
-    }
-    return Object.entries(map)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([date, sessions]) => ({ date, sessions }));
-  }, [worked]);
-
-  // Sessions mit Genehmigungsstatus (für Verlauf-Tab)
-  const sessionsByDayFull = useMemo(() => {
-    if (!mySessions.length) return [];
-    const map = {};
-    for (const s of mySessions) {
-      const d = toLocalIso(s.checkin_time);
-      if (!d) continue;
-      if (!map[d]) map[d] = [];
-      map[d].push(s);
-    }
-    return Object.entries(map)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([date, sessions]) => ({ date, sessions }));
-  }, [mySessions]);
-
   // ── Guards ───────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="mb-loading">
         <div className="mb-loading__spinner" />
-        <span className="mb-loading__text">Wird geladen…</span>
+        <span className="mb-loading__text">{t("common.loading")}</span>
       </div>
     );
   }
 
   // When checked in: show the CURRENT session's check-in time (not the first of the day)
-  const currentCheckinTime = isCheckedIn ? fmtTime(activeCheckinIso) : null;
-  const todayCheckinTime   = currentCheckinTime ?? fmtTime(todaySessions[0]?.checkin);
-  const todayCheckoutTime  = fmtTime(todaySessions.filter(s => s.checkout).slice(-1)[0]?.checkout);
+  const currentCheckinTime = isCheckedIn ? fmtTime(activeCheckinIso, dateTag) : null;
+  const todayCheckinTime   = currentCheckinTime ?? fmtTime(todaySessions[0]?.checkin, dateTag);
+  const todayCheckoutTime  = fmtTime(todaySessions.filter(s => s.checkout).slice(-1)[0]?.checkout, dateTag);
   const totalSecs = todayClosedSecs + liveSecs;
 
-  const todayLabelUpper = new Date().toLocaleDateString("de-DE", {
+  const todayLabelUpper = new Date().toLocaleDateString(dateTag, {
     weekday: "long", day: "numeric", month: "long", year: "numeric",
   }).toUpperCase();
   const firstName = user?.name?.split(" ")[0] ?? "—";
-  const lastShiftGroup = sessionsByDay.find(d => d.date !== todayIso);
-  const lastShiftSecs  = lastShiftGroup
-    ? lastShiftGroup.sessions.reduce((a, s) => a + (s.duration_seconds || 0), 0)
-    : null;
-  const lastShiftLabel = lastShiftSecs != null
-    ? `${Math.floor(lastShiftSecs / 3600)} Std ${Math.floor((lastShiftSecs % 3600) / 60)} Min`
-    : null;
 
   // ── Render ──────────────────────────────────────────────────────────────
   return (
@@ -644,12 +646,26 @@ export function MobileEmployeeDashboard() {
 
       {/* ─── App Bar ─── */}
       <header className="mb-appbar">
-        <button type="button" className="mb-appbar__btn" aria-label="Menü"><IcoMenu /></button>
-        <span className="mb-appbar__title">Zeiterfassung</span>
-        <button type="button" className="mb-appbar__btn" aria-label="Benachrichtigungen">
-          <IcoBell />
-          <span className="mb-appbar__dot" aria-hidden="true" />
-        </button>
+        <span className="mb-appbar__spacer" aria-hidden />
+        <span className="mb-appbar__title">{t("appbar.title")}</span>
+        <NotificationDropdown
+          variant="mobile"
+          notif={notif}
+          onOpenEntity={(n) => {
+            const target = NOTIF_ENTITY_TAB[n.entity_type];
+            if (target) {
+              setTab(target.tab);
+              if (target.planungTab) setPlanungTab(target.planungTab);
+              if (n.entity_type === "work_session") setHighlightSessionId(n.entity_id);
+            } else {
+              setTab("benachrichtigungen");
+            }
+          }}
+          onViewAll={() => {
+            setTab("benachrichtigungen");
+            notif.openList();
+          }}
+        />
       </header>
 
       {/* ─── Main content ─── */}
@@ -662,9 +678,9 @@ export function MobileEmployeeDashboard() {
             <div className="mb-greeting-new">
               <p className="mb-greeting-new__date">{todayLabelUpper}</p>
               <h1 className="mb-greeting-new__heading">
-                Hallo,<br /><em>{firstName}.</em>
+                {t("dashboard.greetingHi")}<br /><em>{firstName}.</em>
               </h1>
-              <p className="mb-greeting-new__sub">Schön, dass du da bist — bereit für deinen Tag.</p>
+              <p className="mb-greeting-new__sub">{t("dashboard.greetingSub")}</p>
             </div>
 
             {/* Timer card */}
@@ -673,26 +689,26 @@ export function MobileEmployeeDashboard() {
                 <div className="mb-timer-card__status">
                   <span className={`mb-timer-card__dot${isCheckedIn ? " mb-timer-card__dot--active" : ""}`} />
                   <span className="mb-timer-card__status-label">
-                    {isCheckedIn ? "Eingestempelt" : "Ausgestempelt"}
+                    {isCheckedIn ? t("dashboard.checkedIn") : t("dashboard.checkedOut")}
                   </span>
                 </div>
-                <span className="mb-timer-card__today-label">HEUTE</span>
+                <span className="mb-timer-card__today-label">{t("common.today")}</span>
               </div>
 
               <div className="mb-timer-card__time">{fmtClock(isCheckedIn ? liveSecs : 0)}</div>
-              <p className="mb-timer-card__caption">ARBEITSZEIT · STD : MIN : SEK</p>
+              <p className="mb-timer-card__caption">{t("dashboard.workTimeCaption")}</p>
 
               <div className="mb-timer-card__divider" />
 
               <div className="mb-timer-card__inout">
                 <div className="mb-timer-card__col">
-                  <span className="mb-timer-card__col-label">Check-In</span>
-                  <span className="mb-timer-card__col-value">{todayCheckinTime ?? "—"}</span>
+                  <span className="mb-timer-card__col-label">{t("dashboard.checkIn")}</span>
+                  <span className="mb-timer-card__col-value">{todayCheckinTime ?? t("common.dash")}</span>
                 </div>
                 <div className="mb-timer-card__col-sep" />
                 <div className="mb-timer-card__col">
-                  <span className="mb-timer-card__col-label">Check-Out</span>
-                  <span className="mb-timer-card__col-value">{todayCheckoutTime ?? "—"}</span>
+                  <span className="mb-timer-card__col-label">{t("dashboard.checkOut")}</span>
+                  <span className="mb-timer-card__col-value">{todayCheckoutTime ?? t("common.dash")}</span>
                 </div>
               </div>
             </div>
@@ -709,20 +725,20 @@ export function MobileEmployeeDashboard() {
                 {stampBusy ? (
                   <>
                     <span className="mb-big-btn__spinner" />
-                    <span className="mb-big-btn__label">Standort…</span>
-                    <span className="mb-big-btn__sub">WIRD GEPRÜFT</span>
+                    <span className="mb-big-btn__label">{t("dashboard.gpsLoading")}</span>
+                    <span className="mb-big-btn__sub">{t("dashboard.gpsChecking")}</span>
                   </>
                 ) : isCheckedIn ? (
                   <>
                     <span className="mb-big-btn__icon"><IcoStop /></span>
-                    <span className="mb-big-btn__label">Auschecken</span>
-                    <span className="mb-big-btn__sub">LÄUFT GERADE</span>
+                    <span className="mb-big-btn__label">{t("dashboard.checkOutBtn")}</span>
+                    <span className="mb-big-btn__sub">{t("dashboard.checkOutSub")}</span>
                   </>
                 ) : (
                   <>
                     <span className="mb-big-btn__icon"><IcoEnter /></span>
-                    <span className="mb-big-btn__label">Einchecken</span>
-                    <span className="mb-big-btn__sub">TIPPEN ZUM START</span>
+                    <span className="mb-big-btn__label">{t("dashboard.checkInBtn")}</span>
+                    <span className="mb-big-btn__sub">{t("dashboard.checkInSub")}</span>
                   </>
                 )}
               </button>
@@ -730,102 +746,13 @@ export function MobileEmployeeDashboard() {
               {stampError && (
                 <p className="mb-action-area__error">{stampError}</p>
               )}
-              {!isCheckedIn && !stampError && (
-                <p className="mb-action-area__hint">
-                  {lastShiftLabel ? `Letzte Schicht · ${lastShiftLabel}` : "Letzte Schicht · —"}
-                </p>
-              )}
             </div>
           </>
         )}
 
-        {/* ══ VERLAUF ════════════════════════════════════════════════════ */}
-        {tab === "verlauf" && (
-          <div className="mb-verlauf">
-            {sessionsByDayFull.length === 0 ? (
-              <div className="mb-empty">
-                <div className="mb-empty__icon">🕐</div>
-                <p className="mb-empty__text">Noch keine Einträge vorhanden.</p>
-              </div>
-            ) : (
-              sessionsByDayFull.map(({ date, sessions }) => {
-                const dayTotal = sessions.reduce((acc, s) => {
-                  if (s.status === "pending" && s.checkout_time) {
-                    const diff = (new Date(s.checkout_time) - new Date(s.checkin_time)) / 1000;
-                    return acc + Math.max(0, Math.round(diff));
-                  }
-                  return acc + (s.duration_seconds || 0);
-                }, 0);
-                return (
-                  <div key={date} className="mb-day-group">
-                    <div className="mb-day-group__header">
-                      <span className="mb-day-group__date">{fmtDayLabel(date)}</span>
-                      {dayTotal > 0 && <span className="mb-day-group__hours">{fmtDuration(dayTotal)}</span>}
-                    </div>
-
-                    <div className="mb-session-list">
-                      {sessions.map((s) => {
-                        const statusMap = {
-                          pending:   { label: "Ausstehend", cls: "mb-session-badge--pending"  },
-                          approved:  { label: "Genehmigt",  cls: "mb-session-badge--approved" },
-                          corrected: { label: "Korrigiert", cls: "mb-session-badge--corrected"},
-                          rejected:  { label: "Abgelehnt",  cls: "mb-session-badge--rejected" },
-                        };
-                        const st = statusMap[s.status] ?? { label: s.status, cls: "" };
-
-                        let displaySecs = s.duration_seconds || 0;
-                        if (s.status === "pending" && s.checkout_time) {
-                          displaySecs = Math.max(0, Math.round(
-                            (new Date(s.checkout_time) - new Date(s.checkin_time)) / 1000
-                          ));
-                        }
-
-                        return (
-                          <div key={s.id} className="mb-session-card">
-                            <div className="mb-session-card__head">
-                              <div className="mb-session-card__times">
-                                <span className="mb-session-card__time-in">
-                                  {fmtTime(s.checkin_time) ?? "—"}
-                                </span>
-                                <span className="mb-session-card__arrow">→</span>
-                                <span className="mb-session-card__time-out">
-                                  {s.checkout_time
-                                    ? fmtTime(s.checkout_time)
-                                    : <em className="mb-session-card__active">Aktiv</em>}
-                                </span>
-                              </div>
-                              <span className={`mb-session-badge ${st.cls}`}>{st.label}</span>
-                            </div>
-
-                            <div className="mb-session-card__body">
-                              {s.checkout_time && (
-                                <span className="mb-session-card__dur">
-                                  {fmtDuration(displaySecs)}
-                                </span>
-                              )}
-                              {s.status === "corrected" && s.admin_note && (
-                                <span className="mb-session-card__note">Hinweis: {s.admin_note}</span>
-                              )}
-                              {s.status === "rejected" && s.rejection_reason && (
-                                <span className="mb-session-card__note mb-session-card__note--reject">
-                                  Grund: {s.rejection_reason}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
         {/* ══ STATISTIK / ARBEITSZEIT ════════════════════════════════════ */}
         {tab === "statistik" && (() => {
-          const todayLabel = new Date().toLocaleDateString("de-DE", {
+          const todayLabel = new Date().toLocaleDateString(dateTag, {
             weekday: "long", day: "numeric", month: "long", year: "numeric",
           }).toUpperCase();
 
@@ -843,23 +770,23 @@ export function MobileEmployeeDashboard() {
               {/* ── Header ───────────────────────────────────────────── */}
               <div className="az-header">
                 <div className="az-header__eyebrow">{todayLabel}</div>
-                <h2 className="az-header__title">Arbeitszeit</h2>
+                <h2 className="az-header__title">{t("work.title")}</h2>
               </div>
 
               {/* ── Official dark banner ──────────────────────────────── */}
               <div className="az-banner">
-                <div className="az-banner__eyebrow">OFFIZIELLE ARBEITSZEIT · MONAT</div>
+                <div className="az-banner__eyebrow">{t("work.officialMonth")}</div>
                 <div className="az-banner__total">
                   <AzHms seconds={worked?.official_seconds_month ?? 0} variant="big" />
                 </div>
-                <div className="az-banner__sub">Genehmigt &amp; Korrigiert</div>
+                <div className="az-banner__sub">{t("work.approvedCorrected")}</div>
                 <div className="az-banner__divider" />
                 <div className="az-banner__footer">
                   <div>
-                    <div className="az-banner__pending-label">AUSSTEHEND</div>
+                    <div className="az-banner__pending-label">{t("work.pending")}</div>
                     <AzHms seconds={worked?.pending_seconds_month ?? 0} variant="sm" />
                   </div>
-                  <div className="az-banner__caption">wartet auf Admin-Freigabe</div>
+                  <div className="az-banner__caption">{t("work.pendingHint")}</div>
                 </div>
               </div>
 
@@ -867,11 +794,11 @@ export function MobileEmployeeDashboard() {
               <div className="az-tiles">
                 <div className="az-tile">
                   <div className="az-tile__num">{worked?.pending_count ?? 0}</div>
-                  <div className="az-tile__label">AUSSTEHEND</div>
+                  <div className="az-tile__label">{t("work.pending")}</div>
                 </div>
                 <div className="az-tile">
-                  <div className="az-tile__num">{leaveSummary?.remaining_days ?? "—"}</div>
-                  <div className="az-tile__label">URLAUB · REST</div>
+                  <div className="az-tile__num">{leaveSummary?.remaining_days ?? t("common.dash")}</div>
+                  <div className="az-tile__label">{t("work.vacationRest")}</div>
                 </div>
               </div>
 
@@ -880,11 +807,13 @@ export function MobileEmployeeDashboard() {
                 <div className="az-section">
                   <div className="az-section-header">
                     <span className="az-section-header__dot az-section-header__dot--amber" />
-                    <span className="az-section-header__title">Ausstehende Schichten</span>
+                    <span className="az-section-header__title">{t("work.pendingShifts")}</span>
                     <span className="az-section-header__rule" />
                     <span className="az-section-header__total">{pendingTotalStr}</span>
                   </div>
-                  {pendingSessions.map(s => <AzShiftCard key={s.id} session={s} />)}
+                  {pendingSessions.map(s => (
+                    <AzShiftCard key={s.id} session={s} highlighted={highlightSessionId === s.id} />
+                  ))}
                 </div>
               )}
 
@@ -893,10 +822,12 @@ export function MobileEmployeeDashboard() {
                 <div className="az-section">
                   <div className="az-section-header">
                     <span className="az-section-header__dot az-section-header__dot--green" />
-                    <span className="az-section-header__title">Genehmigt &amp; Korrigiert</span>
+                    <span className="az-section-header__title">{t("work.approvedShifts")}</span>
                     <span className="az-section-header__rule" />
                   </div>
-                  {officialSessions.map(s => <AzShiftCard key={s.id} session={s} />)}
+                  {officialSessions.map(s => (
+                    <AzShiftCard key={s.id} session={s} highlighted={highlightSessionId === s.id} />
+                  ))}
                 </div>
               )}
 
@@ -905,22 +836,22 @@ export function MobileEmployeeDashboard() {
                 <div className="az-section">
                   <div className="az-section-header">
                     <span className="az-section-header__dot" style={{ background: "#DC2626" }} />
-                    <span className="az-section-header__title">Abgelehnte Schichten</span>
+                    <span className="az-section-header__title">{t("work.rejectedShifts")}</span>
                     <span className="az-section-header__rule" />
                   </div>
-                  {rejectedSessions.map(s => <AzShiftCard key={s.id} session={s} />)}
+                  {rejectedSessions.map(s => (
+                    <AzShiftCard key={s.id} session={s} highlighted={highlightSessionId === s.id} />
+                  ))}
                 </div>
               )}
 
               {/* ── Leer-Zustand ──────────────────────────────────────── */}
               {mySessions.length === 0 && (
-                <div className="az-empty">Noch keine Schichten vorhanden.</div>
+                <div className="az-empty">{t("work.empty")}</div>
               )}
 
               {/* ── Footer ────────────────────────────────────────────── */}
-              <p className="az-footer">
-                Offizielle Arbeitszeit = genehmigt + korrigiert · Ausstehend = wartet auf Admin-Entscheidung
-              </p>
+              <p className="az-footer">{t("work.footer")}</p>
             </div>
           );
         })()}
@@ -943,7 +874,7 @@ export function MobileEmployeeDashboard() {
                     <polyline points="5 13.5 7 15.5 10.5 11"/>
                   </svg>
                 </span>
-                Schichtplan
+                {t("planning.shiftPlan")}
               </button>
               <button
                 type="button"
@@ -963,7 +894,7 @@ export function MobileEmployeeDashboard() {
                     <line x1="14.4" y1="5.6" x2="15.8" y2="4.2"/>
                   </svg>
                 </span>
-                Urlaub
+                {t("planning.vacation")}
               </button>
             </div>
 
@@ -980,28 +911,28 @@ export function MobileEmployeeDashboard() {
               if (myShifts.length === 0) return (
                 <div className="mb-empty">
                   <div className="mb-empty__icon">📅</div>
-                  <p className="mb-empty__text">Keine Schichten geplant.</p>
+                  <p className="mb-empty__text">{t("planning.noShifts")}</p>
                 </div>
               );
               return (
                 <div className="mb-shift-list">
-                  {upcoming.length > 0 && <p className="mb-shift-section-label">Bevorstehend</p>}
+                  {upcoming.length > 0 && <p className="mb-shift-section-label">{t("planning.upcoming")}</p>}
                   {upcoming.map(s => {
                     const isToday = s.shift_date === todayIso2;
-                    const dateLabel = new Date(s.shift_date + "T12:00:00").toLocaleDateString("de-DE", {
+                    const dateLabel = new Date(s.shift_date + "T12:00:00").toLocaleDateString(dateTag, {
                       weekday: "short", day: "numeric", month: "short"
                     });
                     const isNight = s.end_time?.slice(0, 5) < s.start_time?.slice(0, 5);
                     return (
                       <div key={s.id} className={`mb-shift-card${isToday ? " mb-shift-card--today" : ""}`}>
                         <div className="mb-shift-card__left">
-                          {isToday && <span className="mb-shift-today-badge">Heute</span>}
+                          {isToday && <span className="mb-shift-today-badge">{t("planning.today")}</span>}
                           <span className="mb-shift-card__date">{dateLabel}</span>
                         </div>
                         <div className="mb-shift-card__right">
                           <span className="mb-shift-card__time">
                             {s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}
-                            {isNight && <span className="mb-shift-night">Nacht</span>}
+                            {isNight && <span className="mb-shift-night">{t("planning.night")}</span>}
                           </span>
                           {s.location_name && <span className="mb-shift-card__loc">📍 {s.location_name}</span>}
                           {s.note && <span className="mb-shift-card__note">{s.note}</span>}
@@ -1011,9 +942,9 @@ export function MobileEmployeeDashboard() {
                   })}
                   {past.length > 0 && (
                     <>
-                      <p className="mb-shift-section-label mb-shift-section-label--past">Vergangene</p>
+                      <p className="mb-shift-section-label mb-shift-section-label--past">{t("planning.past")}</p>
                       {past.map(s => {
-                        const dateLabel = new Date(s.shift_date + "T12:00:00").toLocaleDateString("de-DE", {
+                        const dateLabel = new Date(s.shift_date + "T12:00:00").toLocaleDateString(dateTag, {
                           weekday: "short", day: "numeric", month: "short"
                         });
                         return (
@@ -1042,7 +973,7 @@ export function MobileEmployeeDashboard() {
                   <div className="mb-urlaub-summary">
                     <div className="mb-urlaub-summary__top">
                       <span className="mb-urlaub-summary__days">{leaveSummary.available_days}</span>
-                      <span className="mb-urlaub-summary__label">Tage verfügbar {new Date().getFullYear()}</span>
+                      <span className="mb-urlaub-summary__label">{t("planning.daysAvailable")} {new Date().getFullYear()}</span>
                     </div>
                     <div className="mb-urlaub-summary__bar">
                       <div
@@ -1051,41 +982,41 @@ export function MobileEmployeeDashboard() {
                       />
                     </div>
                     <div className="mb-urlaub-summary__meta">
-                      <span>Soll {leaveSummary.annual_leave_days}</span>
-                      <span>Genommen {leaveSummary.used_days_this_year}</span>
-                      <span>Rest {leaveSummary.remaining_days}</span>
+                      <span>{t("planning.annualTarget")} {leaveSummary.annual_leave_days}</span>
+                      <span>{t("planning.used")} {leaveSummary.used_days_this_year}</span>
+                      <span>{t("planning.remaining")} {leaveSummary.remaining_days}</span>
                     </div>
                   </div>
                 )}
 
                 {/* Request form */}
                 <div className="mb-urlaub-form-card">
-                  <p className="mb-urlaub-form-title">Neuer Urlaubsantrag</p>
+                  <p className="mb-urlaub-form-title">{t("planning.newLeaveRequest")}</p>
                   <form className="mb-urlaub-form" onSubmit={handleLeaveSubmit}>
                     <div className="mb-urlaub-form__row">
                       <label className="mb-urlaub-form__field">
-                        <span>Von *</span>
+                        <span>{t("planning.from")} *</span>
                         <input type="date" value={leaveFrom} onChange={e => setLeaveFrom(e.target.value)} required disabled={leaveSubmitting} />
                       </label>
                       <label className="mb-urlaub-form__field">
-                        <span>Bis *</span>
+                        <span>{t("planning.to")} *</span>
                         <input type="date" value={leaveTo} onChange={e => setLeaveTo(e.target.value)} required disabled={leaveSubmitting} />
                       </label>
                     </div>
                     <label className="mb-urlaub-form__field mb-urlaub-form__field--full">
-                      <span>Notiz (optional)</span>
+                      <span>{t("planning.note")}</span>
                       <textarea
                         rows={2}
                         value={leaveNote}
                         onChange={e => setLeaveNote(e.target.value)}
                         disabled={leaveSubmitting}
-                        placeholder="z. B. Familienurlaub, Umzug …"
+                        placeholder={t("planning.notePlaceholder")}
                       />
                     </label>
                     {leaveError   && <p className="mb-urlaub-error">{leaveError}</p>}
                     {leaveSuccess && <p className="mb-urlaub-success">{leaveSuccess}</p>}
                     <button type="submit" className="mb-urlaub-submit" disabled={leaveSubmitting || !leaveFrom || !leaveTo}>
-                      {leaveSubmitting ? "Wird gesendet…" : "Antrag einreichen"}
+                      {leaveSubmitting ? t("planning.submitting") : t("planning.submit")}
                     </button>
                   </form>
                 </div>
@@ -1093,19 +1024,19 @@ export function MobileEmployeeDashboard() {
                 {/* Past requests */}
                 {myLeaveRequests.length > 0 && (
                   <div className="mb-leave-list">
-                    <p className="mb-shift-section-label">Meine Anträge</p>
+                    <p className="mb-shift-section-label">{t("planning.myRequests")}</p>
                     {myLeaveRequests.map(r => {
                       const st = (r.status || "").toLowerCase();
                       const badgeCls = st === "approved" ? "mb-leave-badge--green"
                         : st === "rejected" ? "mb-leave-badge--red" : "mb-leave-badge--orange";
-                      const badgeTxt = st === "approved" ? "Genehmigt"
-                        : st === "rejected" ? "Abgelehnt" : "Ausstehend";
+                      const badgeTxt = st === "approved" ? t("status.approved")
+                        : st === "rejected" ? t("status.rejected") : t("status.pending");
                       return (
                         <div key={r.id} className="mb-leave-item">
                           <div className="mb-leave-item__dates">
-                            {new Date(r.start_date + "T12:00:00").toLocaleDateString("de-DE", { day: "2-digit", month: "short" })}
+                            {new Date(r.start_date + "T12:00:00").toLocaleDateString(dateTag, { day: "2-digit", month: "short" })}
                             {" – "}
-                            {new Date(r.end_date + "T12:00:00").toLocaleDateString("de-DE", { day: "2-digit", month: "short", year: "numeric" })}
+                            {new Date(r.end_date + "T12:00:00").toLocaleDateString(dateTag, { day: "2-digit", month: "short", year: "numeric" })}
                           </div>
                           <span className={`mb-leave-badge ${badgeCls}`}>{badgeTxt}</span>
                         </div>
@@ -1118,37 +1049,100 @@ export function MobileEmployeeDashboard() {
           </div>
         )}
 
+        {/* ══ BENACHRICHTIGUNGEN ═══════════════════════════════════════ */}
+        {tab === "benachrichtigungen" && (
+          <div className="mb-notifications">
+            <div className="mb-notifications__header">
+              <h2 className="mb-notifications__title">{t("notifications.title")}</h2>
+              <div className="mb-notifications__actions">
+                {notif.unreadCount > 0 && (
+                  <button type="button" className="mb-notif-mark-all" onClick={notif.markAllRead}>
+                    {t("common.markAllRead")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="mb-notifications__refresh"
+                  onClick={notif.openList}
+                  disabled={notif.listLoading}
+                >
+                  {notif.listLoading ? t("common.loading") : t("common.refresh")}
+                </button>
+              </div>
+            </div>
+            <p className="mb-notifications__sub">{t("notifications.sub")}</p>
+
+            {notif.listLoading && notif.notifications.length === 0 ? (
+              <div className="mb-notif-empty">{t("common.loading")}</div>
+            ) : notif.notifications.length === 0 ? (
+              <div className="mb-notifications__empty">
+                <IcoBell />
+                <p>{t("notifications.empty")}</p>
+                <span>{t("notifications.emptyHint")}</span>
+              </div>
+            ) : (
+              <div className="mb-notifications__list">
+                {notif.notifications.map((n) => (
+                  <button
+                    type="button"
+                    key={n.id}
+                    className={`mb-notifications__item${!n.read_at ? " mb-notifications__item--unread" : ""}`}
+                    onClick={() => {
+                      if (!n.read_at) notif.markRead(n.id);
+                      const target = NOTIF_ENTITY_TAB[n.entity_type];
+                      if (target) {
+                        setTab(target.tab);
+                        if (target.planungTab) setPlanungTab(target.planungTab);
+                        if (n.entity_type === "work_session") setHighlightSessionId(n.entity_id);
+                      }
+                    }}
+                  >
+                    <span className="mb-notifications__category">{notifCategory(n.type, t)}</span>
+                    <span className="mb-notifications__item-title">{n.title}</span>
+                    {notifBodyLines(n.body).map((line) => (
+                      <span key={line} className="mb-notifications__item-body">{line}</span>
+                    ))}
+                    <span className="mb-notifications__item-time">{formatNotifRelativeTime(n.created_at, locale)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ══ PROFIL ═════════════════════════════════════════════════════ */}
         {tab === "profil" && (
           <div className="mb-profil">
             <div className="mb-avatar-large">{user?.name?.[0]?.toUpperCase() ?? "?"}</div>
             <div style={{ textAlign: "center" }}>
               <p className="mb-profil-name">{user?.name ?? "—"}</p>
-              <p className="mb-profil-role">{user?.role === "admin" ? "Administration" : "Mitarbeiter"}</p>
+              <p className="mb-profil-role">{user?.role === "admin" ? t("profile.adminRole") : t("profile.employeeRole")}</p>
             </div>
 
             <div className="mb-profil-info">
               <div className="mb-profil-row">
-                <span className="mb-profil-row__label">E-Mail</span>
-                <span className="mb-profil-row__value">{user?.email ?? "—"}</span>
+                <span className="mb-profil-row__label">{t("profile.email")}</span>
+                <span className="mb-profil-row__value">{user?.email ?? t("common.dash")}</span>
               </div>
               <div className="mb-profil-row">
-                <span className="mb-profil-row__label">Rolle</span>
-                <span className="mb-profil-row__value">{user?.role === "admin" ? "Admin" : "Mitarbeiter"}</span>
+                <span className="mb-profil-row__label">{t("profile.role")}</span>
+                <span className="mb-profil-row__value">{user?.role === "admin" ? t("profile.admin") : t("profile.employeeRole")}</span>
               </div>
               {user?.phone && (
                 <div className="mb-profil-row">
-                  <span className="mb-profil-row__label">Telefon</span>
+                  <span className="mb-profil-row__label">{t("profile.phone")}</span>
                   <span className="mb-profil-row__value">{user.phone}</span>
                 </div>
               )}
             </div>
 
+            <LanguageSelector />
+
             <div className="mb-profil-actions">
               {user?.role === "admin" && (
                 <Link to="/admin/dashboard" className="mb-action-btn mb-action-btn--blue">
                   <IcoAdmin />
-                  Admin Panel
+                  {t("profile.adminPanel")}
                 </Link>
               )}
               <button
@@ -1157,7 +1151,7 @@ export function MobileEmployeeDashboard() {
                 onClick={() => { clearToken(); navigate("/login"); }}
               >
                 <IcoLogout />
-                Ausloggen
+                {t("profile.logout")}
               </button>
             </div>
           </div>
@@ -1167,20 +1161,19 @@ export function MobileEmployeeDashboard() {
 
       {/* ─── Bottom Navigation ─── */}
       <nav className="mb-nav">
-        {[
-          { id: "dashboard", label: "Home",     Icon: IcoHome      },
-          { id: "verlauf",   label: "Verlauf",  Icon: IcoClock    },
-          { id: "planung",   label: "Planung",  Icon: IcoPlanung  },
-          { id: "statistik", label: "Statistik",Icon: IcoChart    },
-          { id: "profil",    label: "Profil",   Icon: IcoPerson   },
-        ].map(({ id, label, Icon }) => (
+        {bottomNav.map(({ id, label, Icon }) => (
           <button
             key={id}
             type="button"
             className={`mb-nav__item${tab === id ? " mb-nav__item--active" : ""}`}
             onClick={() => setTab(id)}
           >
-            <span className="mb-nav__icon"><Icon /></span>
+            <span className="mb-nav__icon">
+              <Icon />
+              {id === "benachrichtigungen" && notif.unreadCount > 0 && (
+                <span className="mb-nav__badge">{notif.unreadCount > 9 ? "9+" : notif.unreadCount}</span>
+              )}
+            </span>
             <span>{label}</span>
           </button>
         ))}
@@ -1207,6 +1200,8 @@ export function MobileEmployeeDashboard() {
 
 // ── Check-In / Check-Out Overlay ───────────────────────────────────────────────
 function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, apiBusy, onConfirm, onClose }) {
+  const { t, locale } = useLanguage();
+  const dateTag = localeDateTag(locale);
   const isCheckin = type === "checkin";
 
   const distanceM = useMemo(() => {
@@ -1226,10 +1221,10 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
     <div className="mb-overlay">
       {/* Header */}
       <div className="mb-overlay__header">
-        <button type="button" className="mb-overlay__back" onClick={onClose} aria-label="Zurück">
+        <button type="button" className="mb-overlay__back" onClick={onClose} aria-label={t("overlay.back")}>
           <IcoArrowLeft />
         </button>
-        <span className="mb-overlay__title">Standort prüfen</span>
+        <span className="mb-overlay__title">{t("overlay.verifyTitle")}</span>
       </div>
 
       <div className="mb-overlay__body">
@@ -1244,8 +1239,8 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
             ) : (
               <>
                 <div className="mb-map-loading__spinner" />
-                <span className="mb-map-loading__title">Standort prüfen</span>
-                <span className="mb-map-loading__sub">Bitte warte, wir prüfen deinen Standort…</span>
+                <span className="mb-map-loading__title">{t("overlay.verifyTitle")}</span>
+                <span className="mb-map-loading__sub">{t("overlay.waitGps")}</span>
               </>
             )}
           </div>
@@ -1289,9 +1284,9 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
               <span className="mb-status-banner__icon">✅</span>
               <div>
                 <div className="mb-status-banner__main">
-                  {isCheckin ? "Erfolgreich eingecheckt!" : "Erfolgreich ausgecheckt!"}
+                  {isCheckin ? t("overlay.checkInSuccess") : t("overlay.checkOutSuccess")}
                 </div>
-                <div className="mb-status-banner__sub">Wird geschlossen…</div>
+                <div className="mb-status-banner__sub">{t("overlay.closing")}</div>
               </div>
             </div>
           )}
@@ -1302,7 +1297,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
               <span className="mb-status-banner__icon">⚠️</span>
               <div>
                 <div className="mb-status-banner__main">
-                  {apiResult.isOutside ? "Außerhalb des Bereichs" : "Fehler"}
+                  {apiResult.isOutside ? t("overlay.outsideArea") : t("overlay.error")}
                 </div>
                 <div className="mb-status-banner__sub">{apiResult.message}</div>
               </div>
@@ -1315,7 +1310,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
               <span className="mb-status-banner__icon">{isInside ? "✅" : "⚠️"}</span>
               <div>
                 <div className="mb-status-banner__main">
-                  {isInside ? "Innerhalb des Bereichs" : "Außerhalb des Bereichs"}
+                  {isInside ? t("overlay.insideArea") : t("overlay.outsideArea")}
                 </div>
                 {distanceM !== null && (
                   <div className="mb-status-banner__sub">
@@ -1331,22 +1326,22 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
             <div className="mb-detail-rows">
               {workplace && (
                 <div className="mb-detail-row">
-                  <span className="mb-detail-row__label">Standort</span>
+                  <span className="mb-detail-row__label">{t("overlay.location")}</span>
                   <span className="mb-detail-row__value">{workplace.name}</span>
                 </div>
               )}
               {distanceM !== null && (
                 <div className="mb-detail-row">
-                  <span className="mb-detail-row__label">Entfernung</span>
+                  <span className="mb-detail-row__label">{t("overlay.distance")}</span>
                   <span className={`mb-detail-row__value ${isInside ? "mb-detail-row__value--green" : "mb-detail-row__value--red"}`}>
                     {distanceM}m {workplace ? `(innerhalb ${workplace.radius_meters}m)` : ""}
                   </span>
                 </div>
               )}
               <div className="mb-detail-row">
-                <span className="mb-detail-row__label">Zeit</span>
+                <span className="mb-detail-row__label">{t("overlay.time")}</span>
                 <span className="mb-detail-row__value">
-                  {new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  {new Date().toLocaleTimeString(dateTag, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                 </span>
               </div>
             </div>
@@ -1360,9 +1355,9 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
               onClick={onConfirm}
               disabled={!canConfirm}
             >
-              {apiBusy  ? "Wird gespeichert…"  :
-               gpsBusy  ? "GPS wird geladen…"   :
-               isCheckin ? "Einchecken"          : "Auschecken"}
+              {apiBusy  ? t("overlay.saving")  :
+               gpsBusy  ? t("overlay.gpsLoading")   :
+               isCheckin ? t("overlay.checkIn")          : t("overlay.checkOut")}
             </button>
           )}
 

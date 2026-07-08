@@ -19,6 +19,7 @@ from app.routes import planning as planning_routes
 from app.routes import reports as reports_routes
 from app.routes import ai as ai_routes
 from app.routes import notifications as notifications_routes
+from app.routes import employee_notifications as employee_notifications_routes
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,65 @@ def _migrate_db() -> None:
                 )
             )
 
+    insp4 = inspect(engine)
+    if not insp4.has_table("notifications"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE notifications (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+                        type        VARCHAR(50) NOT NULL,
+                        title       VARCHAR(200) NOT NULL,
+                        body        VARCHAR(1000),
+                        entity_type VARCHAR(30),
+                        entity_id   INTEGER,
+                        actor_id    INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+                        read_at     TIMESTAMP,
+                        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+                    )
+                    """
+                    if IS_SQLITE
+                    else """
+                    CREATE TABLE notifications (
+                        id          SERIAL PRIMARY KEY,
+                        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+                        type        VARCHAR(50) NOT NULL,
+                        title       VARCHAR(200) NOT NULL,
+                        body        VARCHAR(1000),
+                        entity_type VARCHAR(30),
+                        entity_id   INTEGER,
+                        actor_id    INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+                        read_at     TIMESTAMP WITH TIME ZONE,
+                        created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX ix_notifications_employee_read "
+                    "ON notifications (employee_id, read_at)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX ix_notifications_employee_created "
+                    "ON notifications (employee_id, created_at)"
+                )
+            )
+    elif not IS_SQLITE and insp4.has_table("notifications"):
+        notif_cols = {c["name"]: c for c in insp4.get_columns("notifications")}
+        body_col = notif_cols.get("body")
+        if body_col is not None:
+            body_len = getattr(body_col["type"], "length", None)
+            if body_len is not None and body_len < 1000:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("ALTER TABLE notifications ALTER COLUMN body TYPE VARCHAR(1000)")
+                    )
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -223,6 +283,7 @@ app.include_router(employee_routes.router)
 app.include_router(planning_routes.router)
 app.include_router(ai_routes.router)
 app.include_router(notifications_routes.router)
+app.include_router(employee_notifications_routes.router)
 
 
 @app.get("/")

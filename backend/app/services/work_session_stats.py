@@ -143,8 +143,13 @@ def get_employee_session_stats(db: Session, employee_id: int) -> dict:
 
 
 def get_global_session_stats(db: Session) -> dict:
-    """Globale WorkSession-Statistiken über alle Mitarbeiter."""
-    sessions = db.scalars(select(WorkSession)).all()
+    """Globale WorkSession-Statistiken über alle Mitarbeiter, laufender Berlin-Monat."""
+    start_utc, end_utc = current_berlin_month_bounds_utc()
+    sessions = db.scalars(
+        select(WorkSession)
+        .where(WorkSession.checkin_time >= start_utc)
+        .where(WorkSession.checkin_time < end_utc)
+    ).all()
 
     official_seconds = 0
     pending_seconds = 0

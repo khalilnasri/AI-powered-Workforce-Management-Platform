@@ -32,6 +32,15 @@ from app.schemas.approvals import (
     WorkSessionRejectRequest,
     WorkSessionResponse,
 )
+from app.services.notification_messages import (
+    attendance_force_checkout,
+    attendance_reminder,
+    session_approved,
+    session_corrected,
+    session_deleted,
+    session_rejected,
+)
+from app.services.notification_service import create_notification
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 
@@ -131,12 +140,25 @@ def approve_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
+    if session.status != "pending":
+        raise HTTPException(status_code=400, detail="Nur ausstehende Sessions können genehmigt werden.")
 
     session.status         = "approved"
     session.approved_by_id = admin.id
     session.approved_at    = datetime.now(UTC)
     session.updated_at     = datetime.now(UTC)
     session.rejection_reason = None
+    ntype, title, body = session_approved(session, admin)
+    create_notification(
+        db,
+        employee_id=session.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="work_session",
+        entity_id=session.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(session)
     return _build_response(session, db)
@@ -153,12 +175,25 @@ def reject_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
+    if session.status != "pending":
+        raise HTTPException(status_code=400, detail="Nur ausstehende Sessions können abgelehnt werden.")
 
     session.status           = "rejected"
     session.rejection_reason = body.rejection_reason.strip()
     session.approved_by_id   = admin.id
     session.approved_at      = datetime.now(UTC)
     session.updated_at       = datetime.now(UTC)
+    ntype, title, body = session_rejected(session, admin, session.rejection_reason or "")
+    create_notification(
+        db,
+        employee_id=session.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="work_session",
+        entity_id=session.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(session)
     return _build_response(session, db)
@@ -175,12 +210,21 @@ def correct_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
+    if session.status not in ("pending", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail="Nur ausstehende oder abgelehnte Sessions können korrigiert werden.",
+        )
 
     checkin_time  = _ensure_utc(body.checkin_time)
     checkout_time = _ensure_utc(body.checkout_time)
 
     if checkout_time <= checkin_time:
         raise HTTPException(status_code=400, detail="Check-out muss nach Check-in liegen.")
+
+    old_checkin = session.checkin_time
+    old_checkout = session.checkout_time
+    old_duration = session.duration_seconds
 
     duration = max(0, int((checkout_time - checkin_time).total_seconds()))
 
@@ -189,9 +233,28 @@ def correct_session(
     session.duration_seconds = duration
     session.admin_note       = body.admin_note
     session.status           = "corrected"
+    session.rejection_reason = None
     session.approved_by_id   = admin.id
     session.approved_at      = datetime.now(UTC)
     session.updated_at       = datetime.now(UTC)
+    ntype, title, body = session_corrected(
+        session,
+        admin,
+        old_checkin=old_checkin,
+        old_checkout=old_checkout,
+        old_duration=old_duration,
+        admin_note=body.admin_note,
+    )
+    create_notification(
+        db,
+        employee_id=session.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="work_session",
+        entity_id=session.id,
+        actor_id=admin.id,
+    )
     db.commit()
     db.refresh(session)
     return _build_response(session, db)
@@ -201,7 +264,7 @@ def correct_session(
 def delete_work_session(
     session_id: int,
     db: Session = Depends(get_db),
-    _: Employee = Depends(require_admin),
+    admin: Employee = Depends(require_admin),
 ):
     """
     Entfernt die WorkSession (Genehmigungs-/Buchungszeile).
@@ -213,6 +276,18 @@ def delete_work_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
+
+    ntype, title, body = session_deleted(session, admin)
+    create_notification(
+        db,
+        employee_id=session.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="work_session",
+        entity_id=session.id,
+        actor_id=admin.id,
+    )
     db.delete(session)
     db.commit()
     return None
@@ -301,12 +376,31 @@ def list_overdue_checkouts(
 def remind_overdue_employee(
     checkin_log_id: int,
     db: Session  = Depends(get_db),
-    _: Employee  = Depends(require_admin),
+    admin: Employee = Depends(require_admin),
 ):
     checkin_log = db.get(Attendance, checkin_log_id)
     if checkin_log is None:
         raise HTTPException(status_code=404, detail="Eintrag nicht gefunden.")
-    return {"status": "ok", "message": "Erinnerung wurde vermerkt."}
+    if checkin_log.log_type != "checkin":
+        raise HTTPException(status_code=400, detail="Kein offener Check-in.")
+
+    checkin_at = (
+        checkin_log.created_at if checkin_log.created_at.tzinfo
+        else checkin_log.created_at.replace(tzinfo=UTC)
+    )
+    ntype, title, body = attendance_reminder(admin, checkin_at)
+    create_notification(
+        db,
+        employee_id=checkin_log.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="attendance_log",
+        entity_id=checkin_log.id,
+        actor_id=admin.id,
+    )
+    db.commit()
+    return {"status": "ok", "message": "Erinnerung wurde gesendet."}
 
 
 @router.post("/overdue-checkouts/{checkin_log_id}/force-checkout", status_code=200)
@@ -370,6 +464,20 @@ def force_checkout_overdue(
         updated_at=now_utc,
     )
     db.add(ws)
+    db.flush()
+    ntype, title, body = attendance_force_checkout(
+        admin, checkin_time, checkout_time, duration,
+    )
+    create_notification(
+        db,
+        employee_id=checkin_log.employee_id,
+        type=ntype,
+        title=title,
+        body=body,
+        entity_type="work_session",
+        entity_id=ws.id,
+        actor_id=admin.id,
+    )
     db.commit()
     logger.info(
         "Manueller Checkout: employee_id=%d, checkin_log=%d, checkout=%s",
