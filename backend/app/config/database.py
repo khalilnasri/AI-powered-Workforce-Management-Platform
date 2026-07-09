@@ -117,7 +117,7 @@ if IS_SQLITE:
     _connect_args = {"check_same_thread": False}
 else:
     _connect_args = {
-        "options": "-c client_encoding=UTF8 -c lc_messages=C",
+        "options": "-c client_encoding=UTF8",
     }
 
 engine = create_engine(
