@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.auth.admin_deps import require_admin
@@ -13,7 +13,12 @@ from app.config.database import get_db
 from app.models.attendance import Attendance
 from app.models.employee import Employee, EmployeeRole
 from app.models.employee_work_location import EmployeeWorkLocation
+from app.models.invite_code import InviteCode
+from app.models.leave_request import LeaveRequest
 from app.models.location import WorkplaceLocation
+from app.models.notification import Notification
+from app.models.planning import ShiftPlan
+from app.models.work_session import WorkSession
 from app.services.employment_hours import normalize_employment_type, resolved_month_target_hours
 from app.services.leave_service import aggregate_leave_year_window, resolved_annual_quota
 from app.services.work_session_stats import get_global_session_stats, month_hours_summary_by_employee
@@ -81,6 +86,37 @@ def _sync_employee_work_locations(db: Session, emp: Employee, location_ids: list
         ordered.append(lid)
         db.add(EmployeeWorkLocation(employee_id=emp.id, location_id=lid))
     emp.assigned_location_id = ordered[0] if ordered else None
+
+
+def _purge_employee_data(db: Session, employee_id: int) -> None:
+    """Alle Daten eines Mitarbeiters unwiderruflich entfernen (Hard-Delete)."""
+    db.execute(delete(WorkSession).where(WorkSession.employee_id == employee_id))
+    db.execute(delete(Attendance).where(Attendance.employee_id == employee_id))
+    db.execute(delete(Notification).where(Notification.employee_id == employee_id))
+    db.execute(delete(LeaveRequest).where(LeaveRequest.employee_id == employee_id))
+    db.execute(delete(ShiftPlan).where(ShiftPlan.employee_id == employee_id))
+    db.execute(delete(EmployeeWorkLocation).where(EmployeeWorkLocation.employee_id == employee_id))
+    db.execute(delete(InviteCode).where(InviteCode.created_by_employee_id == employee_id))
+    db.execute(
+        update(InviteCode)
+        .where(InviteCode.used_by_employee_id == employee_id)
+        .values(used_by_employee_id=None)
+    )
+    db.execute(
+        update(WorkSession)
+        .where(WorkSession.approved_by_id == employee_id)
+        .values(approved_by_id=None)
+    )
+    db.execute(
+        update(LeaveRequest)
+        .where(LeaveRequest.decided_by_id == employee_id)
+        .values(decided_by_id=None)
+    )
+    db.execute(
+        update(Notification)
+        .where(Notification.actor_id == employee_id)
+        .values(actor_id=None)
+    )
 
 
 def _employee_to_out(
@@ -278,6 +314,34 @@ def deactivate_employee(
     mh_all = month_hours_summary_by_employee(db)
     loc_ids = _employee_location_ids_bulk(db, [emp]).get(emp.id, [])
     return _employee_to_out(emp, agg.get(emp.id), location_ids=loc_ids, month_hours=mh_all.get(emp.id))
+
+
+@router.delete("/employees/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    current_admin: Employee = Depends(require_admin),
+):
+    """Mitarbeiter und alle zugehörigen Daten unwiderruflich löschen."""
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mitarbeiter nicht gefunden.")
+    if emp.id == current_admin.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Du kannst dich nicht selbst löschen.")
+    if emp.role == EmployeeRole.admin:
+        other_admins = db.scalar(
+            select(func.count())
+            .select_from(Employee)
+            .where(Employee.role == EmployeeRole.admin, Employee.id != emp.id)
+        )
+        if not other_admins:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Der letzte Administrator kann nicht gelöscht werden.",
+            )
+    _purge_employee_data(db, emp.id)
+    db.delete(emp)
+    db.commit()
 
 
 @router.get("/locations", response_model=list[AdminLocationOut])
