@@ -23,7 +23,7 @@ class Employee(Base):
         default=EmployeeRole.employee,
         server_default=EmployeeRole.employee.value,
     )
-    # Soft-Delete: niemals hart löschen, nur deaktivieren
+    # Deaktivierung weiterhin möglich; Hard-Delete über DELETE /admin/employees/{id}
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     # Optionale Kontaktdaten
     phone = Column(String(50), nullable=True)

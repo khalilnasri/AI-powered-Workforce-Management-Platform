@@ -681,7 +681,7 @@ export function AdminDashboard() {
   const [leaveModalError, setLeaveModalError] = useState(null);
   const [leaveModalBusy, setLeaveModalBusy] = useState(false);
 
-  /** Bestätigung vor „Löschen“ (Deaktivieren) in der Mitarbeitertabelle */
+  /** Bestätigung vor endgültigem Löschen eines Mitarbeiters */
   const [empDeactivateModal, setEmpDeactivateModal] = useState(null);
   const [empDeactivateBusy, setEmpDeactivateBusy] = useState(false);
 
@@ -1278,12 +1278,13 @@ export function AdminDashboard() {
     if (!empDeactivateModal) return;
     setEmpDeactivateBusy(true);
     try {
-      await apiClient.patch(`${EMPLOYEES_URL}/${empDeactivateModal.id}/deactivate`);
+      await apiClient.delete(`${EMPLOYEES_URL}/${empDeactivateModal.id}`);
+      if (selectedEmpId === empDeactivateModal.id) setSelectedEmpId(null);
       setEmpDeactivateModal(null);
       await refreshAll();
     } catch (err) {
       const d = axios.isAxiosError(err) ? err.response?.data?.detail : null;
-      alert(typeof d === "string" ? d : "Aktion fehlgeschlagen.");
+      alert(typeof d === "string" ? d : "Löschen fehlgeschlagen.");
     } finally {
       setEmpDeactivateBusy(false);
     }
@@ -2360,13 +2361,22 @@ export function AdminDashboard() {
                                 Löschen
                               </button>
                             ) : (
-                              <button
-                                type="button"
-                                className="emp-side-panel__action-btn emp-side-panel__action-btn--success"
-                                onClick={() => handleActivateEmployee(selectedEmp)}
-                              >
-                                Aktivieren
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  className="emp-side-panel__action-btn emp-side-panel__action-btn--success"
+                                  onClick={() => handleActivateEmployee(selectedEmp)}
+                                >
+                                  Aktivieren
+                                </button>
+                                <button
+                                  type="button"
+                                  className="emp-side-panel__action-btn emp-side-panel__action-btn--danger"
+                                  onClick={() => setEmpDeactivateModal(selectedEmp)}
+                                >
+                                  Endgültig löschen
+                                </button>
+                              </>
                             )}
                           </div>
                         </>
@@ -3985,7 +3995,7 @@ export function AdminDashboard() {
           >
             <div className="ad-modal__header">
               <div>
-                <h2 id="ad-emp-deactivate-title" className="ad-modal__title">Mitarbeiter löschen?</h2>
+                <h2 id="ad-emp-deactivate-title" className="ad-modal__title">Mitarbeiter endgültig löschen?</h2>
                 <p className="ad-modal__subtitle">
                   {empDeactivateModal.name} ({empDeactivateModal.email})
                 </p>
@@ -4002,8 +4012,9 @@ export function AdminDashboard() {
             </div>
             <div className="ad-modal__body">
               <p className="ad-modal__summary ad-modal__summary--warn" role="alert">
-                Der Zugang wird gesperrt und der Mitarbeiter kann sich nicht mehr anmelden. Daten bleiben erhalten;
-                Sie können den Mitarbeiter später über <strong>Aktivieren</strong> wieder freischalten.
+                Der Mitarbeiter und <strong>alle zugehörigen Daten</strong> werden unwiderruflich gelöscht:
+                Stempelprotokoll, Arbeitszeiten, Urlaubsanträge, Schichten, Benachrichtigungen und Standort-Zuweisungen.
+                Diese Aktion kann <strong>nicht rückgängig</strong> gemacht werden.
               </p>
               <div className="ad-modal__footer ad-modal__footer--modal-end">
                 <button
@@ -4020,7 +4031,7 @@ export function AdminDashboard() {
                   onClick={confirmEmpDeactivate}
                   disabled={empDeactivateBusy}
                 >
-                  {empDeactivateBusy ? "Wird ausgeführt…" : "Löschen bestätigen"}
+                  {empDeactivateBusy ? "Wird gelöscht…" : "Endgültig löschen"}
                 </button>
               </div>
             </div>
