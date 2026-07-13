@@ -1796,6 +1796,33 @@ export function AdminDashboard() {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+  function haversineMeters(lat1, lng1, lat2, lng2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLng = (lng2 - lng1) * (Math.PI / 180);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  /** Standortname aus GPS (wie in reports.py) — sonst Koordinaten oder Zuweisung. */
+  function resolveAttendanceLocation(lat, lng, employee) {
+    if (lat != null && lng != null && locations.length > 0) {
+      for (const loc of locations) {
+        if (haversineMeters(lat, lng, loc.lat, loc.lng) <= (loc.radius_meters ?? 200)) {
+          return loc.name;
+        }
+      }
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+    const locIds = employee?.assigned_location_ids?.length
+      ? employee.assigned_location_ids
+      : (employee?.assigned_location_id ? [employee.assigned_location_id] : []);
+    const assigned = locIds[0] ? locations.find((l) => l.id === locIds[0]) : null;
+    return assigned?.name ?? "—";
+  }
+
   function locationName(id) {
     if (!id) return "—";
     return locations.find((l) => l.id === id)?.name ?? `#${id}`;
@@ -1812,9 +1839,14 @@ export function AdminDashboard() {
       const d = new Date(rec.created_at);
       if (d < todayStart) continue;
       const key = rec.employee_email ?? rec.employee_name;
-      if (!byKey[key]) byKey[key] = { name: rec.employee_name, email: rec.employee_email, checkIns: [], checkOuts: [] };
+      if (!byKey[key]) {
+        byKey[key] = { name: rec.employee_name, email: rec.employee_email, checkIns: [], checkOuts: [], lastGps: null };
+      }
       if (rec.type === "checkin") byKey[key].checkIns.push(d);
       else if (rec.type === "checkout") byKey[key].checkOuts.push(d);
+      if (rec.lat != null && rec.lng != null && (!byKey[key].lastGps || d >= byKey[key].lastGps.time)) {
+        byKey[key].lastGps = { time: d, lat: rec.lat, lng: rec.lng };
+      }
     }
     return Object.values(byKey).map((emp) => {
       const lastIn  = emp.checkIns.length  > 0 ? new Date(Math.max(...emp.checkIns.map(Number)))  : null;
@@ -1824,18 +1856,14 @@ export function AdminDashboard() {
       if (lastIn && lastOut && lastOut > lastIn) workSecs = (lastOut - lastIn) / 1000;
       else if (lastIn && active) workSecs = (Date.now() - lastIn) / 1000;
       const employee = employees.find((e) => e.email === emp.email);
-      const locIds = employee?.assigned_location_ids?.length
-        ? employee.assigned_location_ids
-        : (employee?.assigned_location_id ? [employee.assigned_location_id] : []);
-      const locId = locIds[0];
-      const loc = locId ? locations.find((l) => l.id === locId) : (locations.length > 0 ? locations[0] : null);
+      const gps = emp.lastGps;
       return {
         name: emp.name,
         checkIn:  lastIn  ? lastIn.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : null,
         checkOut: !active && lastOut ? lastOut.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : null,
         workSecs,
         active,
-        location: loc?.name ?? "—",
+        location: resolveAttendanceLocation(gps?.lat, gps?.lng, employee),
       };
     }).sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
   }, [attendance, employees, locations]);
