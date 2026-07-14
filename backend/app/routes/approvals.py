@@ -41,7 +41,7 @@ from app.services.notification_messages import (
     session_rejected,
 )
 from app.services.notification_service import create_notification
-from app.utils.shift_time import get_shift_end_datetime, shift_matches_time
+from app.utils.shift_time import EARLY_CHECKIN_TOLERANCE, get_shift_end_datetime, shift_matches_time
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 
@@ -65,11 +65,16 @@ def _ensure_utc(dt: datetime) -> datetime:
 def _find_matching_shift(shifts: list[ShiftPlan], checkin_time: datetime) -> ShiftPlan | None:
     """
     Aus den Kandidaten-Schichten eines Mitarbeiters diejenige wählen, deren
-    Zeitfenster (inkl. Nachtschicht-Tagesüberlauf) ``checkin_time`` tatsächlich
-    enthält. Bei mehreren Treffern (sollte durch Planung nicht vorkommen)
-    wird die mit dem spätesten Start gewählt.
+    Zeitfenster (inkl. Nachtschicht-Tagesüberlauf und Toleranz vor
+    Schichtbeginn) ``checkin_time`` tatsächlich enthält. Bei mehreren
+    Treffern (z. B. Check-in kurz vor einer Nachtschicht, während die
+    vorherige Schicht noch offiziell läuft) wird die mit dem spätesten
+    Start gewählt – also die tatsächlich bevorstehende Schicht.
     """
-    matches = [s for s in shifts if shift_matches_time(s, checkin_time, _BERLIN)]
+    matches = [
+        s for s in shifts
+        if shift_matches_time(s, checkin_time, _BERLIN, early_tolerance=EARLY_CHECKIN_TOLERANCE)
+    ]
     if not matches:
         return None
     return max(matches, key=lambda s: (s.shift_date, s.start_time))

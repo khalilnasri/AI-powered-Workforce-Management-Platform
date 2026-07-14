@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from app.models.employee import Employee
 from app.models.planning import ShiftPlan
 from app.models.work_session import WorkSession
+from app.utils.shift_time import get_shift_end_date, is_overnight_shift
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 
@@ -46,7 +47,11 @@ def _fmt_duration(seconds: int) -> str:
 
 
 def _fmt_shift_slot(shift_date: date, start: time, end: time) -> str:
-    return f"{shift_date:%d.%m.%Y} · {start:%H:%M}–{end:%H:%M} Uhr"
+    slot = f"{shift_date:%d.%m.%Y} · {start:%H:%M}–{end:%H:%M} Uhr"
+    if is_overnight_shift(start, end):
+        end_date = get_shift_end_date(shift_date, start, end)
+        slot += f" (Ende {end_date:%d.%m.})"
+    return slot
 
 
 def _managed_by(admin: Employee) -> str:
