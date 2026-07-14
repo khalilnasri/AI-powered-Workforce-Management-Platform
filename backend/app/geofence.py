@@ -15,6 +15,7 @@ from app.models.employee_work_location import EmployeeWorkLocation
 from app.models.location import WorkplaceLocation
 from app.models.planning import ShiftPlan
 from app.utils.distance import haversine_meters
+from app.utils.shift_time import shift_matches_time
 
 # Keep in sync with frontend `GEOFENCE_MESSAGE` (EmployeeDashboard.jsx).
 OUTSIDE_WORKPLACE_MESSAGE = "Outside allowed workplace area"
@@ -46,14 +47,7 @@ def _berlin_now() -> datetime:
 
 def shift_covers_now(shift: ShiftPlan, now: datetime) -> bool:
     """True, wenn ``now`` in [start, end] zur Schicht gehört (inkl. Nachtschicht über Mitternacht)."""
-    tz = now.tzinfo
-    d = shift.shift_date
-    start_dt = datetime.combine(d, shift.start_time, tzinfo=tz)
-    if shift.start_time <= shift.end_time:
-        end_dt = datetime.combine(d, shift.end_time, tzinfo=tz)
-        return start_dt <= now <= end_dt
-    end_dt = datetime.combine(d + timedelta(days=1), shift.end_time, tzinfo=tz)
-    return start_dt <= now <= end_dt
+    return shift_matches_time(shift, now, now.tzinfo)
 
 
 def _active_shift_locations(db: Session, employee_id: int, now: datetime) -> list[WorkplaceLocation]:
