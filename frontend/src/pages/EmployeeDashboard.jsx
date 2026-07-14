@@ -753,11 +753,15 @@ function DesktopEmployeeDashboard() {
     return m;
   }, [myLeaveRequests]);
 
-  /** Nächste Schichten (ab heute) für Dashboard-Karte */
+  /**
+   * Nächste Schichten für Dashboard-Karte.
+   * `myShifts` kommt bereits vom Backend als "aktuelle + zukünftige
+   * Schichten" (inkl. einer noch laufenden Nachtschicht vom Vortag) -
+   * hier nicht erneut nach Datum filtern, sonst fällt genau diese
+   * laufende Nachtschicht wieder raus.
+   */
   const upcomingShiftsPreview = useMemo(() => {
-    const today = localIsoToday();
     return [...myShifts]
-      .filter((sh) => sh.shift_date >= today)
       .sort((a, b) => (a.shift_date + a.start_time).localeCompare(b.shift_date + b.start_time))
       .slice(0, 4);
   }, [myShifts]);

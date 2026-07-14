@@ -27,6 +27,7 @@ const LOCATIONS_URL  = "/admin/locations";
 const ATTENDANCE_URL = "/admin/attendance";
 const STATISTICS_URL = "/admin/statistics";
 const SHIFTS_URL     = "/planning/shifts";
+const SHIFTS_BULK_URL = "/planning/shifts/bulk";
 const REPORTS_URL         = "/admin/reports/attendance";
 const REPORTS_SUMMARY_URL = "/admin/reports/summary";
 const REPORTS_EXCEL_URL   = "/admin/reports/excel";
@@ -47,6 +48,112 @@ function avatarColorForName(name) {
   let hash = 0;
   for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
   return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
+
+// ── Datum-Helfer für die Planungs-Kalenderansicht ────────────────────────────
+const PLAN_WEEKDAY_LABELS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+function toIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function startOfWeek(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dow = (x.getDay() + 6) % 7; // Montag = 0
+  x.setDate(x.getDate() - dow);
+  return x;
+}
+function startOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function endOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+function addMonths(d, n) {
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+function addDays(d, n) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+/** Alle ISO-Datumswerte von fromIso bis toIso (inklusive). */
+function datesBetween(fromIso, toIso) {
+  if (!fromIso || !toIso || fromIso > toIso) return [];
+  const out = [];
+  let cur = new Date(fromIso + "T12:00:00");
+  const end = new Date(toIso + "T12:00:00");
+  while (cur <= end) {
+    out.push(toIsoDate(cur));
+    cur = addDays(cur, 1);
+  }
+  return out;
+}
+function isNightShift(startHHMM, endHHMM) {
+  return endHHMM <= startHHMM;
+}
+function minutesOfDay(hhmmss) {
+  const [h, m] = hhmmss.slice(0, 5).split(":").map(Number);
+  return h * 60 + m;
+}
+function formatWeekRange(weekStart) {
+  const end = addDays(weekStart, 6);
+  const monthFmt = (d) => d.toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  if (weekStart.getMonth() === end.getMonth() && weekStart.getFullYear() === end.getFullYear()) {
+    return `${weekStart.getDate()}. – ${end.getDate()}. ${monthFmt(end)}`;
+  }
+  const startFmt = weekStart.toLocaleDateString("de-DE", { day: "numeric", month: "long" });
+  return `${startFmt} – ${end.getDate()}. ${monthFmt(end)}`;
+}
+function formatEmpRole(role) {
+  if (!role) return "";
+  const r = String(role).toLowerCase();
+  if (r === "admin") return "Admin";
+  if (r === "employee") return "Mitarbeiter";
+  return String(role);
+}
+function getISOWeek(d) {
+  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - day + 3);
+  const firstThu = new Date(date.getFullYear(), 0, 4);
+  const firstDay = (firstThu.getDay() + 6) % 7;
+  firstThu.setDate(firstThu.getDate() - firstDay + 3);
+  return 1 + Math.round((date.getTime() - firstThu.getTime()) / 604800000);
+}
+function shiftDurationMinutes(startHHMM, endHHMM) {
+  const [sh, sm] = startHHMM.split(":").map(Number);
+  const [eh, em] = endHHMM.split(":").map(Number);
+  let startMin = sh * 60 + sm;
+  let endMin = eh * 60 + em;
+  if (endMin <= startMin) endMin += 24 * 60;
+  return endMin - startMin;
+}
+function shiftDurationLabel(startHHMM, endHHMM) {
+  const mins = shiftDurationMinutes(startHHMM, endHHMM);
+  const h = mins / 60;
+  if (Math.abs(h - Math.round(h)) < 0.05) return `${Math.round(h)} h`;
+  return `${h.toFixed(1).replace(".", ",")} h`;
+}
+function formatWeekHours(totalMinutes) {
+  const h = totalMinutes / 60;
+  if (Math.abs(h - Math.round(h)) < 0.05) return `${Math.round(h)} h`;
+  return `${h.toFixed(1).replace(".", ",")} h`;
+}
+function employeeMatchesSearch(emp, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (emp.name || "").toLowerCase().includes(q)
+    || (emp.email || "").toLowerCase().includes(q);
+}
+function defaultEmpLocationId(emp) {
+  if (!emp) return "";
+  if (Array.isArray(emp.assigned_location_ids) && emp.assigned_location_ids.length) {
+    return String(emp.assigned_location_ids[0]);
+  }
+  if (emp.assigned_location_id) return String(emp.assigned_location_id);
+  return "";
 }
 
 // ── SVG Icons ───────────────────────────────────────────────────────────────
@@ -401,6 +508,219 @@ function NextShiftsContent({ shifts }) {
   );
 }
 
+// ── Planungs-Kalender: Schicht-Block (Wochenraster) ───────────────────────────
+function PlanningShiftBlock({ shift, todayIso, onClick }) {
+  const start  = shift.start_time.slice(0, 5);
+  const end    = shift.end_time.slice(0, 5);
+  const night  = isNightShift(start, end);
+  const status = shift.shift_date === todayIso ? "today" : shift.shift_date < todayIso ? "past" : "planned";
+  const typeLabel = night ? "Nacht" : "Tag";
+  return (
+    <button
+      type="button"
+      className={`ad-plan-block ad-plan-block--${night ? "night" : "day"} ad-plan-block--${status}`}
+      onClick={onClick}
+      title={`${start}–${end}${shift.location_name ? " · " + shift.location_name : ""}`}
+    >
+      <div className="ad-plan-block__header">
+        <span className="ad-plan-block__time ad-mono">{start}–{end}</span>
+        <span className="ad-plan-block__dur">{shiftDurationLabel(start, end)}</span>
+      </div>
+      <span className="ad-plan-block__type">{typeLabel}</span>
+      {shift.location_name && (
+        <span className="ad-plan-block__loc">{shift.location_name}</span>
+      )}
+      {shift.note && (
+        <span className="ad-plan-block__note">{shift.note}</span>
+      )}
+    </button>
+  );
+}
+
+// ── Planungs-Kalender: Wochenraster (Mitarbeiter × Wochentage) ─────────────────
+function PlanningWeekGrid({ employees, weekDays, shifts, todayIso, onSlotClick, onShiftClick, emptyMessage }) {
+  const shiftsByEmpDate = useMemo(() => {
+    const map = new Map();
+    for (const s of shifts) {
+      const key = `${s.employee_id}|${s.shift_date}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(s);
+    }
+    for (const arr of map.values()) arr.sort((a, b) => a.start_time.localeCompare(b.start_time));
+    return map;
+  }, [shifts]);
+
+  const weekStatsByEmp = useMemo(() => {
+    const weekIsos = new Set(weekDays.map((d) => toIsoDate(d)));
+    const map = new Map();
+    for (const s of shifts) {
+      if (!weekIsos.has(s.shift_date)) continue;
+      const key = s.employee_id;
+      if (!map.has(key)) map.set(key, { count: 0, minutes: 0 });
+      const st = map.get(key);
+      st.count += 1;
+      st.minutes += shiftDurationMinutes(s.start_time.slice(0, 5), s.end_time.slice(0, 5));
+    }
+    return map;
+  }, [shifts, weekDays]);
+
+  if (employees.length === 0) {
+    return <p className="ad-empty">{emptyMessage ?? "Keine aktiven Mitarbeiter für die Planung."}</p>;
+  }
+
+  return (
+    <div className="ad-plan-grid-wrap">
+      <div className="ad-plan-grid">
+        <div className="ad-plan-grid__corner">Mitarbeiter</div>
+        {weekDays.map((d) => {
+          const iso = toIsoDate(d);
+          return (
+            <div key={iso} className={`ad-plan-grid__head${iso === todayIso ? " ad-plan-grid__head--today" : ""}`}>
+              <span className="ad-plan-grid__head-day">{PLAN_WEEKDAY_LABELS[(d.getDay() + 6) % 7]}</span>
+              <span className="ad-plan-grid__head-date">
+                {d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}
+              </span>
+            </div>
+          );
+        })}
+        <div className="ad-plan-grid__head ad-plan-grid__head--std">Std</div>
+
+        {employees.map((emp) => {
+          const stats = weekStatsByEmp.get(emp.id) ?? { count: 0, minutes: 0 };
+          return (
+            <React.Fragment key={emp.id}>
+              <div className="ad-plan-grid__emp">
+                <span className="ad-user-cell__avatar" style={{ background: avatarColorForName(emp.name) }}>
+                  {(emp.name ?? "?")[0].toUpperCase()}
+                </span>
+                <span className="ad-plan-grid__emp-info">
+                  <span className="ad-plan-grid__emp-name">{emp.name}</span>
+                  {emp.role && (
+                    <span className="ad-plan-grid__emp-role">{formatEmpRole(emp.role)}</span>
+                  )}
+                </span>
+              </div>
+              {weekDays.map((d) => {
+                const iso = toIsoDate(d);
+                const dayShifts = shiftsByEmpDate.get(`${emp.id}|${iso}`) ?? [];
+                return (
+                  <div
+                    key={iso}
+                    className={`ad-plan-cell${iso === todayIso ? " ad-plan-cell--today" : ""}`}
+                    onClick={() => onSlotClick(iso, emp.id)}
+                  >
+                    {dayShifts.map((s) => (
+                      <PlanningShiftBlock
+                        key={s.id}
+                        shift={s}
+                        todayIso={todayIso}
+                        onClick={(e) => { e.stopPropagation(); onShiftClick(s); }}
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      className="ad-plan-cell__add"
+                      onClick={(e) => { e.stopPropagation(); onSlotClick(iso, emp.id); }}
+                      aria-label="Schicht hinzufügen"
+                    >
+                      {Ico.plus}
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="ad-plan-grid__std">
+                <span className="ad-plan-grid__std-hours">{formatWeekHours(stats.minutes)}</span>
+                <span className="ad-plan-grid__std-count">
+                  {stats.count} {stats.count === 1 ? "Schicht" : "Schichten"}
+                </span>
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Planungs-Kalender: Tages-Timeline (0–24 Uhr, Nachtschichten über Mitternacht) ─
+function PlanningDayTimeline({ employees, shifts, day, onSlotClick, onShiftClick, todayIso, emptyMessage }) {
+  const dayIso     = toIsoDate(day);
+  const prevDayIso = toIsoDate(addDays(day, -1));
+
+  const rows = useMemo(() => {
+    return employees.map((emp) => {
+      const bars = [];
+      for (const s of shifts) {
+        if (s.employee_id !== emp.id) continue;
+        const night = isNightShift(s.start_time.slice(0, 5), s.end_time.slice(0, 5));
+        if (s.shift_date === dayIso) {
+          bars.push({
+            shift: s,
+            fromMin: minutesOfDay(s.start_time),
+            toMin: night ? 24 * 60 : minutesOfDay(s.end_time),
+            continuesNextDay: night,
+          });
+        } else if (night && s.shift_date === prevDayIso) {
+          bars.push({
+            shift: s,
+            fromMin: 0,
+            toMin: minutesOfDay(s.end_time),
+            continuesFromPrevDay: true,
+          });
+        }
+      }
+      bars.sort((a, b) => a.fromMin - b.fromMin);
+      return { emp, bars };
+    });
+  }, [employees, shifts, dayIso, prevDayIso]);
+
+  if (employees.length === 0) {
+    return <p className="ad-empty">{emptyMessage ?? "Keine aktiven Mitarbeiter für die Planung."}</p>;
+  }
+
+  return (
+    <div className="ad-plan-timeline">
+      <div className="ad-plan-timeline__head">
+        <div className="ad-plan-grid__emp ad-plan-timeline__emp ad-plan-timeline__emp--head">Mitarbeiter</div>
+        <div className="ad-plan-timeline__ruler">
+          {Array.from({ length: 13 }, (_, i) => i * 2).map((h) => (
+            <span key={h} className="ad-plan-timeline__tick" style={{ left: `${(h / 24) * 100}%` }}>
+              {String(h).padStart(2, "0")}
+            </span>
+          ))}
+        </div>
+      </div>
+      {rows.map(({ emp, bars }) => (
+        <div key={emp.id} className="ad-plan-timeline__row">
+          <div className="ad-plan-grid__emp ad-plan-timeline__emp">
+            <span className="ad-user-cell__avatar" style={{ background: avatarColorForName(emp.name) }}>
+              {(emp.name ?? "?")[0].toUpperCase()}
+            </span>
+            <span className="ad-plan-grid__emp-name">{emp.name}</span>
+          </div>
+          <div className="ad-plan-timeline__track" onClick={() => onSlotClick(dayIso, emp.id)}>
+            {bars.map(({ shift, fromMin, toMin, continuesNextDay, continuesFromPrevDay }) => {
+              const status = shift.shift_date === todayIso ? "today" : shift.shift_date < todayIso ? "past" : "planned";
+              return (
+                <button
+                  type="button"
+                  key={shift.id}
+                  className={`ad-plan-timeline__bar ad-plan-timeline__bar--${status}${continuesNextDay ? " ad-plan-timeline__bar--night-out" : ""}${continuesFromPrevDay ? " ad-plan-timeline__bar--night-in" : ""}`}
+                  style={{ left: `${(fromMin / 1440) * 100}%`, width: `${Math.max(((toMin - fromMin) / 1440) * 100, 2)}%` }}
+                  onClick={(e) => { e.stopPropagation(); onShiftClick(shift); }}
+                  title={`${shift.start_time.slice(0, 5)}–${shift.end_time.slice(0, 5)}${shift.location_name ? " · " + shift.location_name : ""}`}
+                >
+                  <span className="ad-mono">{shift.start_time.slice(0, 5)}–{shift.end_time.slice(0, 5)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Activity Feed ─────────────────────────────────────────────────────────────
 function ActivityFeed({ attendance, approvals }) {
   const events = useMemo(() => {
@@ -627,8 +947,13 @@ export function AdminDashboard() {
   // ── Shift form ────────────────────────────────────────────────────────────
   const [shiftEditId,     setShiftEditId]     = useState(null);
   const [shiftEmpId,      setShiftEmpId]      = useState("");
+  const [shiftEmpIds,     setShiftEmpIds]     = useState([]);
+  const [shiftEmpLocMap,  setShiftEmpLocMap]  = useState({});
+  const [shiftEmpSearch,  setShiftEmpSearch]  = useState("");
   const [shiftLocId,      setShiftLocId]      = useState("");
   const [shiftDate,       setShiftDate]       = useState("");
+  const [shiftDateTo,     setShiftDateTo]     = useState("");
+  const [shiftFormMode,   setShiftFormMode]   = useState("single"); // "single" | "range"
   const [shiftStart,      setShiftStart]      = useState("");
   const [shiftEnd,        setShiftEnd]        = useState("");
   const [shiftNote,       setShiftNote]       = useState("");
@@ -636,6 +961,12 @@ export function AdminDashboard() {
   const [shiftFormSuccess, setShiftFormSuccess] = useState(null);
   const [shiftFormBusy,    setShiftFormBusy]    = useState(false);
   const [showShiftForm,    setShowShiftForm]    = useState(false);
+
+  // ── Planungs-Kalender (Woche/Tag) ────────────────────────────────────────
+  const [planView,      setPlanView]      = useState("week"); // "week" | "day"
+  const [planEmpFilter, setPlanEmpFilter] = useState("");
+  const [planWeekStart, setPlanWeekStart] = useState(() => startOfWeek(new Date()));
+  const [planDay,       setPlanDay]       = useState(() => new Date());
 
   // ── Employee form ─────────────────────────────────────────────────────────
   const [newEmpName, setNewEmpName]         = useState("");
@@ -864,6 +1195,36 @@ export function AdminDashboard() {
     () => overdueCheckouts.filter((o) => !ignoredOverdueIds.has(o.checkin_log_id)),
     [overdueCheckouts, ignoredOverdueIds],
   );
+
+  // ── Planungs-Kalender: abgeleitete Daten ─────────────────────────────────
+  const planEmployees = useMemo(
+    () => [...employees]
+      .filter((e) => e.is_active)
+      .sort((a, b) => (a.name || "").localeCompare(b.name || "", "de")),
+    [employees],
+  );
+  const planEmployeesFiltered = useMemo(
+    () => planEmployees.filter((e) => employeeMatchesSearch(e, planEmpFilter)),
+    [planEmployees, planEmpFilter],
+  );
+  const shiftEmpPickerList = useMemo(
+    () => planEmployees.filter((e) => employeeMatchesSearch(e, shiftEmpSearch)),
+    [planEmployees, shiftEmpSearch],
+  );
+  const shiftSelectedEmployees = useMemo(
+    () => planEmployees.filter((e) => shiftEmpIds.includes(String(e.id))),
+    [planEmployees, shiftEmpIds],
+  );
+  const planWeekDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(planWeekStart, i)),
+    [planWeekStart],
+  );
+  const planTodayIso = toIsoDate(new Date());
+  const planRangeDayCount = useMemo(
+    () => (shiftDate && shiftDateTo && shiftDate <= shiftDateTo ? datesBetween(shiftDate, shiftDateTo).length : 0),
+    [shiftDate, shiftDateTo],
+  );
+  const planRangeShiftCount = planRangeDayCount * shiftEmpIds.length;
 
   // ── Central refresh after approve/reject/correct ─────────────────────────
   // Refreshes statistics (KPI cards) and badge counts without touching
@@ -1546,9 +1907,62 @@ export function AdminDashboard() {
 
   // ── Shift handlers ────────────────────────────────────────────────────────
   function resetShiftForm() {
-    setShiftEditId(null); setShiftEmpId(""); setShiftLocId("");
-    setShiftDate(""); setShiftStart(""); setShiftEnd("");
+    setShiftEditId(null); setShiftEmpId(""); setShiftEmpIds([]); setShiftEmpLocMap({});
+    setShiftEmpSearch("");
+    setShiftLocId("");
+    setShiftDate(""); setShiftDateTo(""); setShiftFormMode("single");
+    setShiftStart(""); setShiftEnd("");
     setShiftNote(""); setShiftFormError(null); setShiftFormSuccess(null);
+  }
+
+  function toggleShiftEmpId(id) {
+    const sid = String(id);
+    if (shiftEmpIds.includes(sid)) {
+      setShiftEmpIds((prev) => prev.filter((x) => x !== sid));
+      setShiftEmpLocMap((m) => {
+        const next = { ...m };
+        delete next[sid];
+        return next;
+      });
+      return;
+    }
+    const emp = employees.find((e) => String(e.id) === sid);
+    setShiftEmpIds((prev) => [...prev, sid]);
+    setShiftEmpLocMap((m) => ({
+      ...m,
+      [sid]: m[sid] || defaultEmpLocationId(emp),
+    }));
+  }
+
+  function selectAllShiftEmps() {
+    const list = shiftEmpSearch.trim() ? shiftEmpPickerList : planEmployees;
+    setShiftEmpIds((prev) => {
+      const ids = new Set(prev);
+      list.forEach((emp) => ids.add(String(emp.id)));
+      return [...ids];
+    });
+    setShiftEmpLocMap((prev) => {
+      const next = { ...prev };
+      list.forEach((emp) => {
+        const sid = String(emp.id);
+        if (!next[sid]) next[sid] = defaultEmpLocationId(emp);
+      });
+      return next;
+    });
+  }
+
+  function openRangePlanning(dateFrom, dateTo) {
+    resetShiftForm();
+    setShiftFormMode("range");
+    if (dateFrom) setShiftDate(dateFrom);
+    setShiftDateTo(dateTo || dateFrom || "");
+    setShowShiftForm(true);
+  }
+
+  function applyPlanMonthPreset(monthOffset = 0) {
+    const base = addMonths(new Date(), monthOffset);
+    setShiftDate(toIsoDate(startOfMonth(base)));
+    setShiftDateTo(toIsoDate(endOfMonth(base)));
   }
 
   function handleEditShift(shift) {
@@ -1561,7 +1975,21 @@ export function AdminDashboard() {
     setShiftNote(shift.note ?? "");
     setShiftFormError(null);
     setShowShiftForm(true);
-    setTimeout(() => document.getElementById("shift-form-anchor")?.scrollIntoView({ behavior: "smooth" }), 50);
+  }
+
+  /** Klick auf einen leeren Kalender-Slot: Panel mit Datum + Mitarbeiter vorausgefüllt öffnen. */
+  function handlePlanSlotClick(dateIso, employeeId) {
+    resetShiftForm();
+    setShiftEmpId(String(employeeId));
+    setShiftDate(dateIso);
+    setShowShiftForm(true);
+  }
+
+  /** "Heute"-Button der Kalender-Toolbar: Woche + Tag synchron auf heute zurücksetzen. */
+  function goToPlanToday() {
+    const t = new Date();
+    setPlanWeekStart(startOfWeek(t));
+    setPlanDay(t);
   }
 
   async function handleSaveShift(e) {
@@ -1569,40 +1997,73 @@ export function AdminDashboard() {
     setShiftFormError(null);
     setShiftFormSuccess(null);
 
-    // Nur identische Zeiten blockieren. end < start = Nachtschicht (erlaubt).
     if (shiftStart && shiftEnd && shiftStart === shiftEnd) {
       setShiftFormError("Start- und Endzeit dürfen nicht identisch sein.");
       return;
     }
 
+    const isRange = shiftFormMode === "range" && shiftEditId === null;
+    if (isRange) {
+      if (!shiftDate || !shiftDateTo) {
+        setShiftFormError("Bitte Von- und Bis-Datum angeben.");
+        return;
+      }
+      if (shiftDate > shiftDateTo) {
+        setShiftFormError("„Von“-Datum darf nicht nach „Bis“-Datum liegen.");
+        return;
+      }
+      if (shiftEmpIds.length === 0) {
+        setShiftFormError("Bitte mindestens einen Mitarbeiter auswählen.");
+        return;
+      }
+    }
+
     setShiftFormBusy(true);
 
-    const payload = {
-      employee_id: Number(shiftEmpId),
-      location_id: shiftLocId ? Number(shiftLocId) : null,
-      shift_date: shiftDate,           // input[type=date] liefert bereits YYYY-MM-DD
-      start_time: shiftStart + ":00",  // HH:MM → HH:MM:SS
-      end_time:   shiftEnd   + ":00",
-      note: shiftNote.trim() || null,
-    };
-
-    const url = shiftEditId !== null ? `${SHIFTS_URL}/${shiftEditId}` : SHIFTS_URL;
-    const method = shiftEditId !== null ? "PUT" : "POST";
-    console.log(`[Shift] ${method} ${url}`);
-    console.log("[Shift] Payload:", payload);
-
     try {
-      const res = shiftEditId !== null
-        ? await apiClient.put(url, payload)
-        : await apiClient.post(url, payload);
+      if (isRange) {
+        const payload = {
+          employees: shiftEmpIds.map((id) => ({
+            employee_id: Number(id),
+            location_id: shiftEmpLocMap[id] ? Number(shiftEmpLocMap[id]) : null,
+          })),
+          date_from: shiftDate,
+          date_to: shiftDateTo,
+          start_time: shiftStart + ":00",
+          end_time: shiftEnd + ":00",
+          note: shiftNote.trim() || null,
+        };
+        const res = await apiClient.post(SHIFTS_BULK_URL, payload);
+        const { created_count, skipped } = res.data ?? {};
+        resetShiftForm();
+        setShowShiftForm(false);
+        let msg = `${created_count} Schicht${created_count === 1 ? "" : "en"} erfolgreich angelegt.`;
+        if (skipped?.length) {
+          msg += ` ${skipped.length} übersprungen (z. B. Urlaub).`;
+        }
+        setShiftFormSuccess(msg);
+      } else {
+        const payload = {
+          employee_id: Number(shiftEmpId),
+          location_id: shiftLocId ? Number(shiftLocId) : null,
+          shift_date: shiftDate,
+          start_time: shiftStart + ":00",
+          end_time: shiftEnd + ":00",
+          note: shiftNote.trim() || null,
+        };
 
-      console.log("[Shift] Response:", res.data);
-      resetShiftForm();
-      setShowShiftForm(false);
-      setShiftFormSuccess(shiftEditId !== null ? "Schicht erfolgreich aktualisiert." : "Schicht erfolgreich angelegt.");
+        const url = shiftEditId !== null ? `${SHIFTS_URL}/${shiftEditId}` : SHIFTS_URL;
+        if (shiftEditId !== null) {
+          await apiClient.put(url, payload);
+        } else {
+          await apiClient.post(url, payload);
+        }
+        resetShiftForm();
+        setShowShiftForm(false);
+        setShiftFormSuccess(shiftEditId !== null ? "Schicht erfolgreich aktualisiert." : "Schicht erfolgreich angelegt.");
+      }
       await refreshAll();
     } catch (err) {
-      console.error("[Shift] Error:", err.response ?? err);
       const httpStatus = axios.isAxiosError(err) ? err.response?.status : null;
       const detail     = axios.isAxiosError(err) ? err.response?.data?.detail : null;
 
@@ -1611,8 +2072,7 @@ export function AdminDashboard() {
       } else if (typeof detail === "string") {
         setShiftFormError(detail);
       } else if (Array.isArray(detail)) {
-        // Pydantic-422: detail ist ein Array von Fehlerobjekten
-        const msgs = detail.map((e) => e.msg ?? JSON.stringify(e)).join(" • ");
+        const msgs = detail.map((item) => item.msg ?? JSON.stringify(item)).join(" • ");
         setShiftFormError(msgs);
       } else if (detail) {
         setShiftFormError(JSON.stringify(detail));
@@ -1624,12 +2084,17 @@ export function AdminDashboard() {
     }
   }
 
+  /** @returns {Promise<boolean>} true nur, wenn tatsächlich gelöscht wurde (nicht bei Abbruch/Fehler). */
   async function handleDeleteShift(id) {
-    if (!confirm("Schicht wirklich löschen?")) return;
+    if (!confirm("Schicht wirklich löschen?")) return false;
     try {
       await apiClient.delete(`${SHIFTS_URL}/${id}`);
       await refreshAll();
-    } catch { alert("Löschen fehlgeschlagen."); }
+      return true;
+    } catch {
+      alert("Löschen fehlgeschlagen.");
+      return false;
+    }
   }
 
   // ── Approval handlers ─────────────────────────────────────────────────────
@@ -3115,16 +3580,25 @@ export function AdminDashboard() {
               <SectionTitle
                 title="Schichtplanung"
                 action={
-                  <button
-                    className="ad-btn ad-btn--primary"
-                    onClick={() => {
-                      resetShiftForm();
-                      setShowShiftForm((v) => !v);
-                    }}
-                  >
-                    <span className="ad-btn__icon">{Ico.plus}</span>
-                    Neue Schicht
-                  </button>
+                  <div className="ad-plan-actions">
+                    <button
+                      className="ad-btn ad-btn--primary"
+                      onClick={() => { resetShiftForm(); setShowShiftForm(true); }}
+                    >
+                      <span className="ad-btn__icon">{Ico.plus}</span>
+                      Neue Schicht
+                    </button>
+                    <button
+                      className="ad-btn ad-btn--ghost"
+                      onClick={() => openRangePlanning(
+                        toIsoDate(startOfMonth(new Date())),
+                        toIsoDate(endOfMonth(new Date())),
+                      )}
+                    >
+                      <span className="ad-btn__icon">{Ico.calendar}</span>
+                      Monat planen
+                    </button>
+                  </div>
                 }
               />
 
@@ -3133,110 +3607,480 @@ export function AdminDashboard() {
                 <p className="ad-success" style={{ marginBottom: "1rem" }}>{shiftFormSuccess}</p>
               )}
 
-              {/* ── Shift form ── */}
+              {/* ── Kalender-Toolbar ── */}
+              <Card className="ad-plan-toolbar-card">
+                <div className="ad-plan-toolbar">
+                  <div className="ad-plan-toolbar__left">
+                    <div className="ad-plan-toolbar__nav">
+                      {planView === "week" ? (
+                        <>
+                          <button
+                            type="button"
+                            className="ad-btn ad-btn--ghost ad-btn--sm ad-plan-nav-btn"
+                            onClick={() => setPlanWeekStart((d) => addDays(d, -7))}
+                            aria-label="Vorherige Woche"
+                          >
+                            ‹
+                          </button>
+                          <button type="button" className="ad-btn ad-btn--ghost ad-btn--sm" onClick={goToPlanToday}>
+                            Heute
+                          </button>
+                          <button
+                            type="button"
+                            className="ad-btn ad-btn--ghost ad-btn--sm ad-plan-nav-btn"
+                            onClick={() => setPlanWeekStart((d) => addDays(d, 7))}
+                            aria-label="Nächste Woche"
+                          >
+                            ›
+                          </button>
+                          <div className="ad-plan-toolbar__range-wrap">
+                            <span className="ad-plan-toolbar__range">{formatWeekRange(planWeekStart)}</span>
+                            <span className="ad-plan-toolbar__kw">Kalenderwoche {getISOWeek(planWeekStart)}</span>
+                          </div>
+                        </>
+                      ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="ad-btn ad-btn--ghost ad-btn--sm ad-plan-nav-btn"
+                          onClick={() => setPlanDay((d) => addDays(d, -1))}
+                          aria-label="Vorheriger Tag"
+                        >
+                          ‹
+                        </button>
+                        <button type="button" className="ad-btn ad-btn--ghost ad-btn--sm" onClick={goToPlanToday}>
+                          Heute
+                        </button>
+                        <button
+                          type="button"
+                          className="ad-btn ad-btn--ghost ad-btn--sm ad-plan-nav-btn"
+                          onClick={() => setPlanDay((d) => addDays(d, 1))}
+                          aria-label="Nächster Tag"
+                        >
+                          ›
+                        </button>
+                        <span className="ad-plan-toolbar__range">
+                          {planDay.toLocaleDateString("de-DE", {
+                            weekday: "long", day: "2-digit", month: "2-digit", year: "numeric",
+                          })}
+                        </span>
+                      </>
+                    )}
+                    </div>
+                    {planView === "week" && (
+                      <div className="ad-plan-toolbar__legend">
+                        <span className="ad-plan-legend__item">
+                          <span className="ad-plan-legend__swatch ad-plan-legend__swatch--night" aria-hidden />
+                          Nacht
+                        </span>
+                        <span className="ad-plan-legend__item">
+                          <span className="ad-plan-legend__swatch ad-plan-legend__swatch--day" aria-hidden />
+                          Tag / Früh
+                        </span>
+                        <span className="ad-plan-toolbar__hint">Zelle klicken zum Planen</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="ad-plan-toolbar__filter">
+                    <span className="ad-plan-toolbar__filter-icon" aria-hidden="true">{Ico.search}</span>
+                    <input
+                      className="ad-input ad-plan-toolbar__search"
+                      type="search"
+                      placeholder="Mitarbeiter filtern…"
+                      value={planEmpFilter}
+                      onChange={(e) => setPlanEmpFilter(e.target.value)}
+                      aria-label="Mitarbeiter in der Planung filtern"
+                    />
+                    {planEmpFilter && (
+                      <button
+                        type="button"
+                        className="ad-btn ad-btn--ghost ad-btn--sm ad-plan-toolbar__clear"
+                        onClick={() => setPlanEmpFilter("")}
+                        aria-label="Filter zurücksetzen"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <div className="ad-plan-toggle-group" role="tablist" aria-label="Ansicht">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={planView === "week"}
+                      className={`ad-plan-toggle${planView === "week" ? " ad-plan-toggle--on" : ""}`}
+                      onClick={() => setPlanView("week")}
+                    >
+                      Woche
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={planView === "day"}
+                      className={`ad-plan-toggle${planView === "day" ? " ad-plan-toggle--on" : ""}`}
+                      onClick={() => setPlanView("day")}
+                    >
+                      Tag
+                    </button>
+                  </div>
+                </div>
+              </Card>
+
+              {/* ── Kalender ── */}
+              <Card>
+                {planView === "week" ? (
+                  <PlanningWeekGrid
+                    employees={planEmployeesFiltered}
+                    weekDays={planWeekDays}
+                    shifts={shifts}
+                    todayIso={planTodayIso}
+                    onSlotClick={handlePlanSlotClick}
+                    onShiftClick={handleEditShift}
+                    emptyMessage={planEmpFilter ? `Kein Mitarbeiter passt zum Filter „${planEmpFilter}“.`: undefined}
+                  />
+                ) : (
+                  <PlanningDayTimeline
+                    employees={planEmployeesFiltered}
+                    shifts={shifts}
+                    day={planDay}
+                    todayIso={planTodayIso}
+                    onSlotClick={handlePlanSlotClick}
+                    onShiftClick={handleEditShift}
+                    emptyMessage={planEmpFilter ? `Kein Mitarbeiter passt zum Filter „${planEmpFilter}“.`: undefined}
+                  />
+                )}
+              </Card>
+
+              {/* ── Schicht anlegen/bearbeiten (Modal) ── */}
               {showShiftForm && (
-                <Card id="shift-form-anchor" className="ad-card--highlight">
-                  <h3 className="ad-form-title">
-                    {shiftEditId !== null ? "Schicht bearbeiten" : "Neue Schicht anlegen"}
-                  </h3>
-                  <form onSubmit={handleSaveShift}>
-                    <div className="ad-form-grid">
-                      {/* Mitarbeiter */}
-                      <div className="ad-field">
-                        <label>Mitarbeiter *</label>
-                        <select
-                          className="ad-input ad-select"
-                          value={shiftEmpId}
-                          onChange={(e) => setShiftEmpId(e.target.value)}
-                          disabled={shiftFormBusy}
-                          required
-                        >
-                          <option value="">— Mitarbeiter wählen —</option>
-                          {employees
-                            .filter((emp) => emp.is_active)
-                            .map((emp) => (
-                              <option key={emp.id} value={String(emp.id)}>
-                                {emp.name}
-                              </option>
-                            ))}
-                        </select>
+                <div
+                  className="ad-modal-backdrop"
+                  role="presentation"
+                  onClick={(ev) => {
+                    if (ev.target === ev.currentTarget && !shiftFormBusy) {
+                      resetShiftForm(); setShowShiftForm(false);
+                    }
+                  }}
+                >
+                  <div
+                    className="ad-modal ad-modal--shift"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="ad-shift-modal-title"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="ad-modal__header ad-modal__header--leave">
+                      <div>
+                        <h2 id="ad-shift-modal-title" className="ad-modal__title">
+                          {shiftEditId !== null
+                            ? "Schicht bearbeiten"
+                            : shiftFormMode === "range"
+                              ? "Zeitraum planen"
+                              : "Neue Schicht anlegen"}
+                        </h2>
+                        {shiftFormMode === "single" && shiftDate && (
+                          <p className="ad-modal__subtitle">
+                            {new Date(shiftDate + "T00:00:00").toLocaleDateString("de-DE", {
+                              weekday: "long", day: "2-digit", month: "2-digit", year: "numeric",
+                            })}
+                          </p>
+                        )}
+                        {shiftFormMode === "range" && shiftDate && shiftDateTo && shiftDate <= shiftDateTo && (
+                          <p className="ad-modal__subtitle">
+                            {shiftEmpIds.length} Mitarbeiter · {planRangeDayCount} Tage · {planRangeShiftCount} Schichten
+                          </p>
+                        )}
                       </div>
+                      <button
+                        type="button"
+                        className="ad-modal__close ad-modal__close--primary"
+                        onClick={() => { if (!shiftFormBusy) { resetShiftForm(); setShowShiftForm(false); } }}
+                        aria-label="Schließen"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <form onSubmit={handleSaveShift}>
+                      <div className="ad-modal__body">
+                        {shiftEditId === null && (
+                          <div className="ad-plan-form-mode" role="tablist" aria-label="Planungsmodus">
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={shiftFormMode === "single"}
+                              className={`ad-plan-toggle${shiftFormMode === "single" ? " ad-plan-toggle--on" : ""}`}
+                              onClick={() => setShiftFormMode("single")}
+                              disabled={shiftFormBusy}
+                            >
+                              Einzeltag
+                            </button>
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={shiftFormMode === "range"}
+                              className={`ad-plan-toggle${shiftFormMode === "range" ? " ad-plan-toggle--on" : ""}`}
+                              onClick={() => {
+                                setShiftFormMode("range");
+                                if (shiftDate && !shiftDateTo) setShiftDateTo(shiftDate);
+                                if (shiftEmpId) setShiftEmpIds([shiftEmpId]);
+                              }}
+                              disabled={shiftFormBusy}
+                            >
+                              Zeitraum
+                            </button>
+                          </div>
+                        )}
+                        <div className="ad-form-grid">
+                          {/* Mitarbeiter */}
+                          {shiftFormMode === "range" && shiftEditId === null ? (
+                            <div className="ad-field ad-field--span2">
+                              <label>Mitarbeiter *</label>
+                              <div className="ad-plan-emp-pick">
+                                <div className="ad-plan-emp-pick__search">
+                                  <span className="ad-plan-emp-pick__search-icon" aria-hidden="true">{Ico.search}</span>
+                                  <input
+                                    className="ad-input"
+                                    type="search"
+                                    placeholder="Mitarbeiter suchen…"
+                                    value={shiftEmpSearch}
+                                    onChange={(e) => setShiftEmpSearch(e.target.value)}
+                                    disabled={shiftFormBusy}
+                                    aria-label="Mitarbeiter in der Auswahl filtern"
+                                  />
+                                </div>
+                                <div className="ad-plan-emp-pick__actions">
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--ghost ad-btn--sm"
+                                    onClick={selectAllShiftEmps}
+                                    disabled={shiftFormBusy}
+                                  >
+                                    {shiftEmpSearch.trim() ? "Gefilterte auswählen" : "Alle auswählen"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--ghost ad-btn--sm"
+                                    onClick={() => { setShiftEmpIds([]); setShiftEmpLocMap({}); }}
+                                    disabled={shiftFormBusy}
+                                  >
+                                    Keine
+                                  </button>
+                                  <span className="ad-plan-emp-pick__count">
+                                    {shiftEmpIds.length} ausgewählt
+                                  </span>
+                                </div>
+                                <div className="ad-plan-emp-pick__list">
+                                  {shiftEmpPickerList.length === 0 ? (
+                                    <p className="ad-plan-emp-pick__empty">
+                                      {shiftEmpSearch.trim()
+                                        ? `Kein Treffer für „${shiftEmpSearch.trim()}“`
+                                        : "Keine aktiven Mitarbeiter."}
+                                    </p>
+                                  ) : shiftEmpPickerList.map((emp) => {
+                                    const checked = shiftEmpIds.includes(String(emp.id));
+                                    return (
+                                      <label key={emp.id} className="ad-plan-emp-pick__item">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => toggleShiftEmpId(emp.id)}
+                                          disabled={shiftFormBusy}
+                                        />
+                                        <span>{emp.name}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="ad-field">
+                              <label>Mitarbeiter *</label>
+                              <select
+                                className="ad-input ad-select"
+                                value={shiftEmpId}
+                                onChange={(e) => setShiftEmpId(e.target.value)}
+                                disabled={shiftFormBusy}
+                                required
+                              >
+                                <option value="">— Mitarbeiter wählen —</option>
+                                {planEmployees.map((emp) => (
+                                  <option key={emp.id} value={String(emp.id)}>
+                                    {emp.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
 
-                      {/* Standort */}
-                      <div className="ad-field">
-                        <label>Standort</label>
-                        <select
-                          className="ad-input ad-select"
-                          value={shiftLocId}
-                          onChange={(e) => setShiftLocId(e.target.value)}
-                          disabled={shiftFormBusy}
-                        >
-                          <option value="">— kein Standort —</option>
-                          {locations.map((loc) => (
-                            <option key={loc.id} value={String(loc.id)}>
-                              {loc.name}
-                            </option>
-                          ))}
-                        </select>
+                          {/* Standort: einzeln = ein Feld; Zeitraum = pro Mitarbeiter */}
+                          {shiftFormMode === "range" && shiftEditId === null ? (
+                            shiftSelectedEmployees.length > 0 && (
+                              <div className="ad-field ad-field--span2">
+                                <label>Standort pro Mitarbeiter</label>
+                                <div className="ad-plan-emp-locs">
+                                  {shiftSelectedEmployees.map((emp) => {
+                                    const sid = String(emp.id);
+                                    return (
+                                      <div key={emp.id} className="ad-plan-emp-loc-row">
+                                        <span className="ad-plan-emp-loc-row__name">{emp.name}</span>
+                                        <select
+                                          className="ad-input ad-select ad-plan-emp-loc-row__select"
+                                          value={shiftEmpLocMap[sid] ?? ""}
+                                          onChange={(e) => setShiftEmpLocMap((m) => ({
+                                            ...m,
+                                            [sid]: e.target.value,
+                                          }))}
+                                          disabled={shiftFormBusy}
+                                        >
+                                          <option value="">— kein Standort —</option>
+                                          {locations.map((loc) => (
+                                            <option key={loc.id} value={String(loc.id)}>
+                                              {loc.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )
+                          ) : (
+                            <div className="ad-field">
+                              <label>Standort</label>
+                              <select
+                                className="ad-input ad-select"
+                                value={shiftLocId}
+                                onChange={(e) => setShiftLocId(e.target.value)}
+                                disabled={shiftFormBusy}
+                              >
+                                <option value="">— kein Standort —</option>
+                                {locations.map((loc) => (
+                                  <option key={loc.id} value={String(loc.id)}>
+                                    {loc.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          {/* Datum / Zeitraum — placeholder removed duplicate below */}
+                          {shiftFormMode === "range" && shiftEditId === null ? (
+                            <>
+                              <div className="ad-field ad-field--span2">
+                                <label>Zeitraum</label>
+                                <div className="ad-plan-month-presets">
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--ghost ad-btn--sm"
+                                    onClick={() => applyPlanMonthPreset(0)}
+                                    disabled={shiftFormBusy}
+                                  >
+                                    Dieser Monat
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ad-btn ad-btn--ghost ad-btn--sm"
+                                    onClick={() => applyPlanMonthPreset(1)}
+                                    disabled={shiftFormBusy}
+                                  >
+                                    Nächster Monat
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="ad-field">
+                                <label>Von Datum *</label>
+                                <input
+                                  className="ad-input"
+                                  type="date"
+                                  value={shiftDate}
+                                  onChange={(e) => setShiftDate(e.target.value)}
+                                  disabled={shiftFormBusy}
+                                  required
+                                />
+                              </div>
+                              <div className="ad-field">
+                                <label>Bis Datum *</label>
+                                <input
+                                  className="ad-input"
+                                  type="date"
+                                  value={shiftDateTo}
+                                  onChange={(e) => setShiftDateTo(e.target.value)}
+                                  disabled={shiftFormBusy}
+                                  required
+                                />
+                              </div>
+                            </>
+                          ) : (
+                            <div className="ad-field">
+                              <label>Datum *</label>
+                              <input
+                                className="ad-input"
+                                type="date"
+                                value={shiftDate}
+                                onChange={(e) => setShiftDate(e.target.value)}
+                                disabled={shiftFormBusy}
+                                required
+                              />
+                            </div>
+                          )}
+
+                          {/* Uhrzeit */}
+                          <div className="ad-field">
+                            <label>{shiftFormMode === "range" ? "Uhrzeit von *" : "Startzeit *"}</label>
+                            <input
+                              className="ad-input"
+                              type="time"
+                              value={shiftStart}
+                              onChange={(e) => setShiftStart(e.target.value)}
+                              disabled={shiftFormBusy}
+                              required
+                            />
+                          </div>
+
+                          <div className="ad-field">
+                            <label>{shiftFormMode === "range" ? "Uhrzeit bis *" : "Endzeit *"}</label>
+                            <input
+                              className="ad-input"
+                              type="time"
+                              value={shiftEnd}
+                              onChange={(e) => setShiftEnd(e.target.value)}
+                              disabled={shiftFormBusy}
+                              required
+                            />
+                          </div>
+
+                          {/* Notiz */}
+                          <div className="ad-field">
+                            <label>Notiz</label>
+                            <input
+                              className="ad-input"
+                              type="text"
+                              placeholder="Optional…"
+                              value={shiftNote}
+                              onChange={(e) => setShiftNote(e.target.value)}
+                              disabled={shiftFormBusy}
+                              maxLength={500}
+                            />
+                          </div>
+                        </div>
+                        {shiftFormMode === "range" && shiftEditId === null && planRangeShiftCount > 0 && (
+                          <p className="ad-plan-range-hint">
+                            Es werden <strong>{planRangeShiftCount}</strong> Schichten angelegt
+                            ({shiftEmpIds.length} Mitarbeiter × {planRangeDayCount} Tage, {shiftStart || "—"}–{shiftEnd || "—"}).
+                          </p>
+                        )}
+                        {shiftFormError && <p className="ad-alert" style={{ marginTop: "0.85rem" }}>{shiftFormError}</p>}
                       </div>
-
-                      {/* Datum */}
-                      <div className="ad-field">
-                        <label>Datum *</label>
-                        <input
-                          className="ad-input"
-                          type="date"
-                          value={shiftDate}
-                          onChange={(e) => setShiftDate(e.target.value)}
-                          disabled={shiftFormBusy}
-                          required
-                        />
-                      </div>
-
-                      {/* Startzeit */}
-                      <div className="ad-field">
-                        <label>Startzeit *</label>
-                        <input
-                          className="ad-input"
-                          type="time"
-                          value={shiftStart}
-                          onChange={(e) => setShiftStart(e.target.value)}
-                          disabled={shiftFormBusy}
-                          required
-                        />
-                      </div>
-
-                      {/* Endzeit */}
-                      <div className="ad-field">
-                        <label>Endzeit *</label>
-                        <input
-                          className="ad-input"
-                          type="time"
-                          value={shiftEnd}
-                          onChange={(e) => setShiftEnd(e.target.value)}
-                          disabled={shiftFormBusy}
-                          required
-                        />
-                      </div>
-
-                      {/* Notiz */}
-                      <div className="ad-field">
-                        <label>Notiz</label>
-                        <input
-                          className="ad-input"
-                          type="text"
-                          placeholder="Optional…"
-                          value={shiftNote}
-                          onChange={(e) => setShiftNote(e.target.value)}
-                          disabled={shiftFormBusy}
-                          maxLength={500}
-                        />
-                      </div>
-
-                      {/* Buttons */}
-                      <div className="ad-field ad-field--actions" style={{ gridColumn: "1/-1" }}>
+                      <div className="ad-modal__footer ad-modal__footer--modal-end">
                         <button type="submit" className="ad-btn ad-btn--primary" disabled={shiftFormBusy}>
-                          {shiftFormBusy ? "Wird gespeichert…" : shiftEditId !== null ? "Speichern" : "Anlegen"}
+                          {shiftFormBusy
+                            ? "Wird gespeichert…"
+                            : shiftEditId !== null
+                              ? "Speichern"
+                              : shiftFormMode === "range"
+                                ? "Zeitraum planen"
+                                : "Anlegen"}
                         </button>
                         <button
                           type="button"
@@ -3246,91 +4090,24 @@ export function AdminDashboard() {
                         >
                           Abbrechen
                         </button>
+                        {shiftEditId !== null && (
+                          <button
+                            type="button"
+                            className="ad-btn ad-btn--danger ad-plan-modal__delete"
+                            disabled={shiftFormBusy}
+                            onClick={async () => {
+                              const deleted = await handleDeleteShift(shiftEditId);
+                              if (deleted) { resetShiftForm(); setShowShiftForm(false); }
+                            }}
+                          >
+                            Löschen
+                          </button>
+                        )}
                       </div>
-                    </div>
-                    {shiftFormError && <p className="ad-alert">{shiftFormError}</p>}
-                  </form>
-                </Card>
-              )}
-
-              {/* ── Shift table ── */}
-              <Card>
-                {shifts.length === 0 ? (
-                  <p className="ad-empty">Noch keine Schichten angelegt.</p>
-                ) : (
-                  <div className="ad-table-wrap">
-                    <table className="ad-table">
-                      <thead>
-                        <tr>
-                          <th>Mitarbeiter</th>
-                          <th>Datum</th>
-                          <th>Uhrzeit</th>
-                          <th>Standort</th>
-                          <th>Notiz</th>
-                          <th>Status</th>
-                          <th>Aktionen</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {shifts.map((shift) => {
-                          const isToday = shift.shift_date === new Date().toISOString().slice(0, 10);
-                          const isPast  = shift.shift_date < new Date().toISOString().slice(0, 10);
-                          return (
-                            <tr key={shift.id} className={isPast ? "ad-table__row--muted" : ""}>
-                              <td>
-                                <div className="ad-user-cell">
-                                  <span className="ad-user-cell__avatar" style={isPast ? { background: "#94a3b8" } : {}}>
-                                    {(shift.employee_name ?? "?")[0].toUpperCase()}
-                                  </span>
-                                  <strong>{shift.employee_name ?? `#${shift.employee_id}`}</strong>
-                                </div>
-                              </td>
-                              <td>
-                                {new Date(shift.shift_date + "T00:00:00").toLocaleDateString("de-DE", {
-                                  weekday: "short", day: "2-digit", month: "2-digit", year: "numeric",
-                                })}
-                              </td>
-                              <td className="ad-mono ad-shift-time">
-                                {shift.start_time.slice(0, 5)} – {shift.end_time.slice(0, 5)}
-                                {shift.end_time.slice(0, 5) < shift.start_time.slice(0, 5) && (
-                                  <span className="ad-badge ad-badge--purple" style={{ marginLeft: "0.4rem" }}>Nacht</span>
-                                )}
-                              </td>
-                              <td>{shift.location_name ?? <span className="ad-muted">—</span>}</td>
-                              <td>{shift.note ?? <span className="ad-muted">—</span>}</td>
-                              <td>
-                                {isToday ? (
-                                  <span className="ad-badge ad-badge--green">Heute</span>
-                                ) : isPast ? (
-                                  <span className="ad-badge ad-badge--gray">Vergangen</span>
-                                ) : (
-                                  <span className="ad-badge ad-badge--blue">Geplant</span>
-                                )}
-                              </td>
-                              <td>
-                                <div className="ad-actions">
-                                  <button
-                                    className="ad-btn ad-btn--sm ad-btn--ghost"
-                                    onClick={() => handleEditShift(shift)}
-                                  >
-                                    Bearbeiten
-                                  </button>
-                                  <button
-                                    className="ad-btn ad-btn--sm ad-btn--danger"
-                                    onClick={() => handleDeleteShift(shift.id)}
-                                  >
-                                    Löschen
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    </form>
                   </div>
-                )}
-              </Card>
+                </div>
+              )}
             </div>
           )}
 
