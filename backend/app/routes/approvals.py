@@ -41,8 +41,13 @@ from app.services.notification_messages import (
     session_rejected,
 )
 from app.services.notification_service import create_notification
+from app.utils.shift_time import get_shift_end_datetime, shift_matches_time
 
 _BERLIN = ZoneInfo("Europe/Berlin")
+
+# Fallback-Regel für Mitarbeiter ohne Schichtplan: nach dieser Dauer ohne
+# Checkout gilt ein Check-in als überfällig.
+_NO_SHIFT_OVERDUE_AFTER = timedelta(hours=12)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,19 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def _find_matching_shift(shifts: list[ShiftPlan], checkin_time: datetime) -> ShiftPlan | None:
+    """
+    Aus den Kandidaten-Schichten eines Mitarbeiters diejenige wählen, deren
+    Zeitfenster (inkl. Nachtschicht-Tagesüberlauf) ``checkin_time`` tatsächlich
+    enthält. Bei mehreren Treffern (sollte durch Planung nicht vorkommen)
+    wird die mit dem spätesten Start gewählt.
+    """
+    matches = [s for s in shifts if shift_matches_time(s, checkin_time, _BERLIN)]
+    if not matches:
+        return None
+    return max(matches, key=lambda s: (s.shift_date, s.start_time))
 
 
 def _build_response(session: WorkSession, db: Session) -> WorkSessionResponse:
@@ -299,13 +317,12 @@ def list_overdue_checkouts(
     _:     Employee = Depends(require_admin),
 ):
     """
-    Mitarbeiter, deren letztes Attendance-Ereignis ein Check-in ist
-    und deren geplante Schicht bereits beendet ist.
+    Mitarbeiter, deren letztes Attendance-Ereignis ein Check-in ist und die
+    entweder ihre zum Check-in passende geplante Schicht bereits
+    überschritten haben, oder – ohne Schichtplan – seit mehr als
+    ``_NO_SHIFT_OVERDUE_AFTER`` eingecheckt sind.
     """
-    now_utc    = datetime.now(UTC)
-    now_berlin = datetime.now(_BERLIN)
-    today      = now_berlin.date()
-    yesterday  = today - timedelta(days=1)
+    now_utc = datetime.now(UTC)
 
     # Letztes Ereignis je Mitarbeiter ermitteln
     latest_sub = (
@@ -330,29 +347,49 @@ def list_overdue_checkouts(
         if emp is None or not emp.is_active:
             continue
 
-        # Jüngste Schicht der letzten zwei Tage suchen
-        shift = db.scalars(
-            select(ShiftPlan)
-            .where(ShiftPlan.employee_id == checkin.employee_id)
-            .where(ShiftPlan.shift_date >= yesterday)
-            .where(ShiftPlan.shift_date <= today)
-            .order_by(ShiftPlan.shift_date.desc(), ShiftPlan.end_time.desc())
-            .limit(1)
-        ).first()
-
-        if shift is None:
-            continue
-
-        shift_end_local = datetime.combine(shift.shift_date, shift.end_time, tzinfo=_BERLIN)
-        shift_end_utc   = shift_end_local.astimezone(UTC)
-
-        if now_utc <= shift_end_utc:
-            continue  # Schicht läuft noch
-
         checkin_aware = (
             checkin.created_at if checkin.created_at.tzinfo
             else checkin.created_at.replace(tzinfo=UTC)
         )
+        checkin_local_date = checkin_aware.astimezone(_BERLIN).date()
+
+        # Kandidaten-Schichten: Start am Check-in-Tag oder am Vortag (deckt
+        # Nachtschichten ab, deren Zeitfenster erst nach Mitternacht in den
+        # Check-in-Tag hineinreicht).
+        candidate_shifts = db.scalars(
+            select(ShiftPlan)
+            .where(ShiftPlan.employee_id == checkin.employee_id)
+            .where(ShiftPlan.shift_date >= checkin_local_date - timedelta(days=1))
+            .where(ShiftPlan.shift_date <= checkin_local_date)
+        ).all()
+
+        shift = _find_matching_shift(candidate_shifts, checkin_aware)
+
+        if shift is None:
+            # Kein zum Check-in passender Schichtplan → Fallback: fester
+            # Zeitraum ab Check-in statt geplantem Schichtende.
+            shift_end_utc = checkin_aware + _NO_SHIFT_OVERDUE_AFTER
+            if now_utc <= shift_end_utc:
+                continue  # noch nicht überfällig
+
+            result.append(
+                OverdueCheckoutOut(
+                    employee_id=emp.id,
+                    employee_name=emp.name,
+                    checkin_time=checkin_aware,
+                    checkin_log_id=checkin.id,
+                    shift_date=checkin_local_date,
+                    shift_end=shift_end_utc,
+                    location_id=None,
+                    location_name=None,
+                )
+            )
+            continue
+
+        shift_end_utc = get_shift_end_datetime(shift, _BERLIN).astimezone(UTC)
+
+        if now_utc <= shift_end_utc:
+            continue  # Schicht läuft noch
 
         loc = db.get(WorkplaceLocation, shift.location_id) if shift.location_id else None
 
@@ -414,27 +451,33 @@ def force_checkout_overdue(
     if checkin_log is None or checkin_log.log_type != "checkin":
         raise HTTPException(status_code=404, detail="Check-in nicht gefunden.")
 
-    now_utc    = datetime.now(UTC)
-    now_berlin = datetime.now(_BERLIN)
-    today      = now_berlin.date()
-    yesterday  = today - timedelta(days=1)
+    now_utc = datetime.now(UTC)
 
-    # Schichtende als Checkout-Zeit verwenden (falls in der Vergangenheit)
-    shift = db.scalars(
+    checkin_time = (
+        checkin_log.created_at if checkin_log.created_at.tzinfo
+        else checkin_log.created_at.replace(tzinfo=UTC)
+    )
+    checkin_local_date = checkin_time.astimezone(_BERLIN).date()
+
+    # Zur Check-in-Zeit passende Schicht suchen (Kandidaten: Start am
+    # Check-in-Tag oder am Vortag, deckt Nachtschichten ab).
+    candidate_shifts = db.scalars(
         select(ShiftPlan)
         .where(ShiftPlan.employee_id == checkin_log.employee_id)
-        .where(ShiftPlan.shift_date >= yesterday)
-        .where(ShiftPlan.shift_date <= today)
-        .order_by(ShiftPlan.shift_date.desc(), ShiftPlan.end_time.desc())
-        .limit(1)
-    ).first()
+        .where(ShiftPlan.shift_date >= checkin_local_date - timedelta(days=1))
+        .where(ShiftPlan.shift_date <= checkin_local_date)
+    ).all()
 
+    shift = _find_matching_shift(candidate_shifts, checkin_time)
+
+    # Schichtende (bzw. 12h-Fallback ohne Schichtplan) als Checkout-Zeit
+    # verwenden, sofern es bereits in der Vergangenheit liegt.
     if shift:
-        shift_end_local = datetime.combine(shift.shift_date, shift.end_time, tzinfo=_BERLIN)
-        shift_end_utc   = shift_end_local.astimezone(UTC)
-        checkout_time   = shift_end_utc if shift_end_utc < now_utc else now_utc
+        shift_end_utc = get_shift_end_datetime(shift, _BERLIN).astimezone(UTC)
     else:
-        checkout_time = now_utc
+        shift_end_utc = checkin_time + _NO_SHIFT_OVERDUE_AFTER
+
+    checkout_time = shift_end_utc if shift_end_utc < now_utc else now_utc
 
     # Checkout-Attendance-Log anlegen (Koordinaten vom Check-in übernehmen)
     checkout_log = Attendance(
@@ -447,10 +490,6 @@ def force_checkout_overdue(
     db.add(checkout_log)
     db.flush()
 
-    checkin_time = (
-        checkin_log.created_at if checkin_log.created_at.tzinfo
-        else checkin_log.created_at.replace(tzinfo=UTC)
-    )
     duration = max(0, int((checkout_time - checkin_time).total_seconds()))
 
     ws = WorkSession(
