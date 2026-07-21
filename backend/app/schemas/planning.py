@@ -86,3 +86,36 @@ class ShiftResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ShiftImportRowResult(BaseModel):
+    row_number: int
+    sheet_name: str = ""
+    employee_id: int | None = None
+    employee_name: str | None = None
+    location_id: int | None = None
+    location_name: str | None = None
+    shift_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    is_valid: bool
+    errors: list[str] = Field(default_factory=list)
+
+
+class ShiftImportPreviewResponse(BaseModel):
+    total_rows: int
+    valid_count: int
+    invalid_count: int
+    rows: list[ShiftImportRowResult]
+
+
+class ShiftImportSkipped(BaseModel):
+    row_number: int
+    sheet_name: str = ""
+    reason: str
+
+
+class ShiftImportCommitResponse(BaseModel):
+    created_count: int
+    skipped: list[ShiftImportSkipped]
+    shifts: list["ShiftResponse"]

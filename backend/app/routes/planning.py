@@ -1,7 +1,8 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,19 +10,24 @@ from app.auth.admin_deps import require_admin
 from app.auth.deps import get_current_employee
 from app.config.database import get_db
 from app.models.employee import Employee
-from app.models.leave_request import LeaveRequest
 from app.models.location import WorkplaceLocation
 from app.models.planning import ShiftPlan
 from app.schemas.planning import (
     ShiftBulkCreateRequest,
     ShiftBulkCreateResponse,
     ShiftCreateRequest,
+    ShiftImportCommitResponse,
+    ShiftImportPreviewResponse,
+    ShiftImportRowResult,
+    ShiftImportSkipped,
     ShiftResponse,
     ShiftUpdateRequest,
     SkippedShiftDate,
 )
+from app.services import shift_import
 from app.services.notification_messages import shift_assigned, shift_deleted, shift_updated
 from app.services.notification_service import create_notification
+from app.services.shift_validation import leave_conflict_reason
 from app.utils.shift_time import get_shift_end_datetime
 
 router = APIRouter(prefix="/planning", tags=["planning"])
@@ -82,20 +88,12 @@ def _location_name(db: Session, location_id: int | None) -> str | None:
 
 def _validate_no_leave_conflict(db: Session, employee_id: int, shift_date: date) -> None:
     """Verhindert Schichtplanung an einem Tag, an dem der Mitarbeiter genehmigten Urlaub hat."""
-    conflict = db.scalar(
-        select(LeaveRequest).where(
-            LeaveRequest.employee_id == employee_id,
-            LeaveRequest.status == "approved",
-            LeaveRequest.start_date <= shift_date,
-            LeaveRequest.end_date >= shift_date,
-        )
-    )
-    if conflict is not None:
+    reason = leave_conflict_reason(db, employee_id, shift_date)
+    if reason is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Mitarbeiter hat vom {conflict.start_date:%d.%m.%Y} bis "
-                f"{conflict.end_date:%d.%m.%Y} genehmigten Urlaub — in diesem Zeitraum "
+                f"Mitarbeiter hat an diesem Tag bereits {reason} — in diesem Zeitraum "
                 "kann keine Schicht eingeplant werden."
             ),
         )
@@ -155,22 +153,6 @@ def create_shift(
     return _to_response(shift, employees_map, locations_map)
 
 
-def _leave_conflict_reason(db: Session, employee_id: int, shift_date: date) -> str | None:
-    conflict = db.scalar(
-        select(LeaveRequest).where(
-            LeaveRequest.employee_id == employee_id,
-            LeaveRequest.status == "approved",
-            LeaveRequest.start_date <= shift_date,
-            LeaveRequest.end_date >= shift_date,
-        )
-    )
-    if conflict is None:
-        return None
-    return (
-        f"Genehmigter Urlaub ({conflict.start_date:%d.%m.%Y}–{conflict.end_date:%d.%m.%Y})"
-    )
-
-
 @router.post("/shifts/bulk", response_model=ShiftBulkCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_shifts_bulk(
     body: ShiftBulkCreateRequest,
@@ -188,7 +170,7 @@ def create_shifts_bulk(
     while day <= body.date_to:
         for item in body.employees:
             emp_id = item.employee_id
-            reason = _leave_conflict_reason(db, emp_id, day)
+            reason = leave_conflict_reason(db, emp_id, day)
             if reason:
                 skipped.append(SkippedShiftDate(employee_id=emp_id, shift_date=day, reason=reason))
             else:
@@ -230,6 +212,129 @@ def create_shifts_bulk(
 
     employees_map, locations_map = _build_maps(db)
     return ShiftBulkCreateResponse(
+        created_count=len(created),
+        skipped=skipped,
+        shifts=[_to_response(s, employees_map, locations_map) for s in created],
+    )
+
+
+# ── Excel-Import ──────────────────────────────────────────────────────────────
+
+def _row_result(row: shift_import.ParsedImportRow) -> ShiftImportRowResult:
+    return ShiftImportRowResult(
+        row_number=row.row_number,
+        sheet_name=row.sheet_name,
+        employee_id=row.employee_id,
+        employee_name=row.employee_name,
+        location_id=row.location_id,
+        location_name=row.location_name,
+        shift_date=row.shift_date,
+        start_time=row.start_time,
+        end_time=row.end_time,
+        is_valid=row.is_valid,
+        errors=row.errors,
+    )
+
+
+@router.get("/shifts/import/template")
+def download_import_template(
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    """Excel-Vorlage für den Schichtplan-Import herunterladen."""
+    buf = shift_import.build_template_workbook(db)
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="schichtplan_vorlage.xlsx"'},
+    )
+
+
+@router.post("/shifts/import/preview", response_model=ShiftImportPreviewResponse)
+async def preview_shift_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: Employee = Depends(require_admin),
+):
+    """Excel-Datei parsen und zeilenweise validieren, ohne etwas zu speichern."""
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nur .xlsx-Dateien werden unterstützt.")
+
+    contents = await file.read()
+    result = shift_import.parse_and_validate_workbook(db, contents)
+
+    return ShiftImportPreviewResponse(
+        total_rows=result.total_rows,
+        valid_count=len(result.valid_rows),
+        invalid_count=result.total_rows - len(result.valid_rows),
+        rows=[_row_result(r) for r in result.all_rows],
+    )
+
+
+@router.post("/shifts/import/commit", response_model=ShiftImportCommitResponse, status_code=status.HTTP_201_CREATED)
+async def commit_shift_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: Employee = Depends(require_admin),
+):
+    """
+    Bestätigten Schichtplan-Import speichern.
+
+    Die Datei wird erneut geparst und validiert (statt clientseitig bestätigten
+    Zeilen zu vertrauen) — das fängt Race Conditions zwischen Vorschau und
+    Bestätigung ab (z. B. inzwischen deaktivierter Mitarbeiter oder neuer Konflikt).
+    """
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nur .xlsx-Dateien werden unterstützt.")
+
+    contents = await file.read()
+    result = shift_import.parse_and_validate_workbook(db, contents)
+
+    created: list[ShiftPlan] = []
+    skipped: list[ShiftImportSkipped] = [
+        ShiftImportSkipped(row_number=r.row_number, sheet_name=r.sheet_name, reason="; ".join(r.errors))
+        for r in result.all_rows
+        if not r.is_valid
+    ]
+
+    for row in result.valid_rows:
+        shift = ShiftPlan(
+            employee_id=row.employee_id,
+            location_id=row.location_id,
+            shift_date=row.shift_date,
+            start_time=row.start_time,
+            end_time=row.end_time,
+        )
+        db.add(shift)
+        created.append(shift)
+
+    if not created:
+        db.rollback()
+        detail = "Keine Schichten angelegt."
+        if skipped:
+            detail += f" {len(skipped)} Zeile(n) übersprungen."
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    db.flush()
+    for shift, row in zip(created, result.valid_rows):
+        ntype, title, nbody = shift_assigned(shift, admin, location_name=row.location_name)
+        create_notification(
+            db,
+            employee_id=shift.employee_id,
+            type=ntype,
+            title=title,
+            body=nbody,
+            entity_type="shift_plan",
+            entity_id=shift.id,
+            actor_id=admin.id,
+        )
+
+    db.commit()
+    for shift in created:
+        db.refresh(shift)
+
+    employees_map, locations_map = _build_maps(db)
+    return ShiftImportCommitResponse(
         created_count=len(created),
         skipped=skipped,
         shifts=[_to_response(s, employees_map, locations_map) for s in created],
