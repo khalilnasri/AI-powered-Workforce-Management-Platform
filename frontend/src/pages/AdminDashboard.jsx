@@ -28,6 +28,9 @@ const ATTENDANCE_URL = "/admin/attendance";
 const STATISTICS_URL = "/admin/statistics";
 const SHIFTS_URL     = "/planning/shifts";
 const SHIFTS_BULK_URL = "/planning/shifts/bulk";
+const SHIFTS_IMPORT_TEMPLATE_URL = "/planning/shifts/import/template";
+const SHIFTS_IMPORT_PREVIEW_URL  = "/planning/shifts/import/preview";
+const SHIFTS_IMPORT_COMMIT_URL   = "/planning/shifts/import/commit";
 const REPORTS_URL         = "/admin/reports/attendance";
 const REPORTS_SUMMARY_URL = "/admin/reports/summary";
 const REPORTS_EXCEL_URL   = "/admin/reports/excel";
@@ -961,6 +964,14 @@ export function AdminDashboard() {
   const [shiftFormSuccess, setShiftFormSuccess] = useState(null);
   const [shiftFormBusy,    setShiftFormBusy]    = useState(false);
   const [showShiftForm,    setShowShiftForm]    = useState(false);
+
+  // ── Schichtplan-Import (Excel) ────────────────────────────────────────────
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFile,      setImportFile]      = useState(null);
+  const [importPreview,   setImportPreview]   = useState(null);
+  const [importBusy,      setImportBusy]      = useState(false);
+  const [importError,     setImportError]     = useState(null);
+  const [importSuccess,   setImportSuccess]   = useState(null);
 
   // ── Planungs-Kalender (Woche/Tag) ────────────────────────────────────────
   const [planView,      setPlanView]      = useState("week"); // "week" | "day"
@@ -2094,6 +2105,94 @@ export function AdminDashboard() {
     } catch {
       alert("Löschen fehlgeschlagen.");
       return false;
+    }
+  }
+
+  // ── Schichtplan-Import (Excel) ─────────────────────────────────────────────
+  async function handleDownloadImportTemplate() {
+    try {
+      const res = await apiClient.get(SHIFTS_IMPORT_TEMPLATE_URL, { responseType: "blob" });
+      const disposition = res.headers["content-disposition"] || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "schichtplan_vorlage.xlsx";
+      const url = URL.createObjectURL(
+        new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
+      );
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch { alert("Vorlage konnte nicht heruntergeladen werden."); }
+  }
+
+  function openImportModal() {
+    setImportFile(null);
+    setImportPreview(null);
+    setImportError(null);
+    setShowImportModal(true);
+  }
+
+  function closeImportModal() {
+    if (importBusy) return;
+    setShowImportModal(false);
+    setImportFile(null);
+    setImportPreview(null);
+    setImportError(null);
+  }
+
+  function handleImportFileChange(e) {
+    setImportFile(e.target.files?.[0] ?? null);
+    setImportPreview(null);
+    setImportError(null);
+  }
+
+  function importErrorMessage(err) {
+    const httpStatus = axios.isAxiosError(err) ? err.response?.status : null;
+    const detail     = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+
+    if (httpStatus === 401 || httpStatus === 403) return "Nicht autorisiert oder keine Admin-Rechte.";
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) return detail.map((item) => item.msg ?? JSON.stringify(item)).join(" • ");
+    if (detail) return JSON.stringify(detail);
+    return "Vorgang fehlgeschlagen.";
+  }
+
+  async function handlePreviewImport() {
+    if (!importFile) return;
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", importFile);
+      const res = await apiClient.post(SHIFTS_IMPORT_PREVIEW_URL, formData, {
+        headers: { "Content-Type": undefined },
+      });
+      setImportPreview(res.data);
+    } catch (err) {
+      setImportError(importErrorMessage(err));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function handleConfirmImport() {
+    if (!importFile) return;
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", importFile);
+      const res = await apiClient.post(SHIFTS_IMPORT_COMMIT_URL, formData, {
+        headers: { "Content-Type": undefined },
+      });
+      const { created_count, skipped } = res.data ?? {};
+      let msg = `${created_count} Schicht${created_count === 1 ? "" : "en"} erfolgreich importiert.`;
+      if (skipped?.length) msg += ` ${skipped.length} Zeile(n) übersprungen.`;
+      closeImportModal();
+      setShiftFormSuccess(msg);
+      await refreshAll();
+    } catch (err) {
+      setImportError(importErrorMessage(err));
+    } finally {
+      setImportBusy(false);
     }
   }
 
@@ -3598,6 +3697,20 @@ export function AdminDashboard() {
                       <span className="ad-btn__icon">{Ico.calendar}</span>
                       Monat planen
                     </button>
+                    <button
+                      className="ad-btn ad-btn--ghost"
+                      onClick={handleDownloadImportTemplate}
+                    >
+                      <span className="ad-btn__icon">📥</span>
+                      Excel-Vorlage herunterladen
+                    </button>
+                    <button
+                      className="ad-btn ad-btn--ghost"
+                      onClick={openImportModal}
+                    >
+                      <span className="ad-btn__icon">📤</span>
+                      Schichtplan importieren
+                    </button>
                   </div>
                 }
               />
@@ -4754,6 +4867,127 @@ export function AdminDashboard() {
 
         </main>
       </div>
+
+      {showImportModal && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => { if (ev.target === ev.currentTarget) closeImportModal(); }}
+        >
+          <div
+            className="ad-modal ad-modal--hours ad-modal--uniform"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-import-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ad-modal__header ad-modal__header--leave">
+              <div>
+                <h2 id="ad-import-modal-title" className="ad-modal__title">Schichtplan importieren</h2>
+                <p className="ad-modal__subtitle">Excel-Datei (.xlsx) hochladen, prüfen und übernehmen</p>
+              </div>
+              <button
+                type="button"
+                className="ad-modal__close ad-modal__close--primary"
+                onClick={closeImportModal}
+                aria-label="Schließen"
+              >
+                ×
+              </button>
+            </div>
+            <div className="ad-modal__body ad-modal__body--leave ad-modal__body--fill">
+              <div className="ad-modal__stack-grow">
+                {importError && <p className="ad-alert" role="alert">{importError}</p>}
+
+                {!importPreview ? (
+                  <>
+                    <p className="ad-hint" style={{ marginBottom: "0.75rem" }}>
+                      Bitte die ausgefüllte Vorlage auswählen. Jeder Mitarbeiter hat ein eigenes
+                      Tabellenblatt mit dem kompletten nächsten Monat — nur Von/Bis (und bei Bedarf
+                      Standort) pro Tag ergänzen. Tage ohne Von/Bis werden übersprungen.
+                    </p>
+                    <input
+                      type="file"
+                      accept=".xlsx"
+                      onChange={handleImportFileChange}
+                      disabled={importBusy}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <p className="ad-hint" style={{ marginBottom: "0.75rem" }}>
+                      {importPreview.valid_count} von {importPreview.total_rows} Zeile
+                      {importPreview.total_rows === 1 ? "" : "n"} gültig, {importPreview.invalid_count} mit Fehlern.
+                    </p>
+                    <div className="ad-table-wrap ad-table-wrap--scroll ad-hours-modal__table-zone">
+                      <table className="ad-table ad-table--compact">
+                        <thead>
+                          <tr>
+                            <th>Tab</th>
+                            <th>Zeile</th>
+                            <th>Mitarbeiter</th>
+                            <th>Datum</th>
+                            <th>Zeit</th>
+                            <th>Standort</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importPreview.rows.map((row) => (
+                            <tr key={`${row.sheet_name}-${row.row_number}`}>
+                              <td>{row.sheet_name || "—"}</td>
+                              <td className="ad-mono">{row.row_number}</td>
+                              <td>{row.employee_name ?? (row.employee_id ?? "—")}</td>
+                              <td className="ad-mono">{row.shift_date ?? "—"}</td>
+                              <td className="ad-mono">
+                                {row.start_time && row.end_time ? `${row.start_time}–${row.end_time}` : "—"}
+                              </td>
+                              <td>{row.location_name ?? "—"}</td>
+                              <td>
+                                {row.is_valid ? (
+                                  <span className="ad-badge ad-badge--green">Gültig</span>
+                                ) : (
+                                  <span className="ad-badge ad-badge--red">
+                                    {row.errors.map((err) => `Zeile ${row.row_number}: ${err}`).join(" · ")}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="ad-modal__footer ad-modal__footer--modal-end">
+                <button type="button" className="ad-btn ad-btn--ghost" onClick={closeImportModal} disabled={importBusy}>
+                  Abbrechen
+                </button>
+                {!importPreview ? (
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn--primary"
+                    onClick={handlePreviewImport}
+                    disabled={!importFile || importBusy}
+                  >
+                    {importBusy ? "Wird geladen…" : "Vorschau laden"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ad-btn ad-btn--primary"
+                    onClick={handleConfirmImport}
+                    disabled={importPreview.valid_count === 0 || importBusy}
+                  >
+                    {importBusy ? "Wird importiert…" : "Importieren"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {empDeactivateModal && (
         <div
