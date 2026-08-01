@@ -36,7 +36,9 @@
   --mb-accent:       #E0431D;
   --mb-accent-text:  #FBF4E9;
   --mb-dot-idle:     #B7AE99;
-  --mb-nav-h:        80px;
+  /* 84px keeps every nav button at a >=48px touch target while the icon/label
+     block stays optically where it was at 80px. */
+  --mb-nav-h:        84px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -62,6 +64,13 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 26px 10px;
+  /* Extra top padding for the native status bar (no-op in the browser,
+     where env(safe-area-inset-top) is 0). Kept as a second declaration
+     so browsers without env() support keep the plain fallback above. */
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  /* Landscape notch/cutout on the long edges. */
+  padding-left: calc(26px + env(safe-area-inset-left, 0px));
+  padding-right: calc(26px + env(safe-area-inset-right, 0px));
   background: var(--mb-paper);
   position: sticky;
   top: 0;
@@ -77,8 +86,8 @@
   text-transform: uppercase;
 }
 .mb-appbar__btn {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -93,7 +102,7 @@
 }
 .mb-appbar__btn:active { background: var(--mb-card); }
 .mb-appbar__btn svg { width: 1.1rem; height: 1.1rem; }
-.mb-appbar__spacer { width: 42px; flex-shrink: 0; }
+.mb-appbar__spacer { width: 44px; flex-shrink: 0; }
 
 /* ══════════════════════════════════════════════════════════════════════
    NOTIFICATION BELL + DROPDOWN
@@ -101,8 +110,8 @@
 .mb-notif-wrap { position: relative; }
 
 .mb-notif-trigger {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -139,6 +148,8 @@
   top: calc(100% + 8px);
   right: 0;
   width: min(340px, calc(100vw - 32px));
+  /* Stay clear of a landscape cutout on the right edge. */
+  width: min(340px, calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
   background: var(--mb-paper);
   border: 1px solid var(--mb-card-border);
   border-radius: 16px;
@@ -173,7 +184,7 @@
   padding: 0;
 }
 
-.mb-notif-list { max-height: 320px; overflow-y: auto; }
+.mb-notif-list { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; }
 
 .mb-notif-empty {
   padding: 2rem 1rem;
@@ -237,10 +248,20 @@
   flex: 1;
   padding: 10px 26px 18px;
   padding-bottom: calc(var(--mb-nav-h) + 18px);
+  /* The nav grows by the home-indicator inset, so the spacer must too. */
+  padding-bottom: calc(var(--mb-nav-h) + 18px + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(26px + env(safe-area-inset-left, 0px));
+  padding-right: calc(26px + env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+.mb-main--enter { animation: mb-tab-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes mb-tab-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ── Bottom Nav ── */
@@ -252,19 +273,29 @@
   width: 100%;
   max-width: 480px;
   height: var(--mb-nav-h);
+  /* box-sizing is border-box, so the inset has to grow the bar itself —
+     otherwise the extra padding would eat into the buttons. */
+  height: calc(var(--mb-nav-h) + env(safe-area-inset-bottom, 0px));
   background: var(--mb-card);
   border-top: 1px solid var(--mb-card-border);
   display: flex;
   justify-content: space-between;
-  padding: 12px 18px 26px;
+  padding: 10px 18px 26px;
+  /* Extra bottom padding for the native home indicator / gesture bar
+     (no-op in the browser, where env(safe-area-inset-bottom) is 0). */
+  padding-bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(18px + env(safe-area-inset-left, 0px));
+  padding-right: calc(18px + env(safe-area-inset-right, 0px));
   z-index: 50;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .mb-nav__item {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
+  min-height: 48px;
   gap: 0.15rem;
   border: none;
   background: transparent;
@@ -725,14 +756,72 @@
   text-align: center;
 }
 .mb-action-area__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   font-family: 'Hanken Grotesk', sans-serif;
   font-size: 12px;
   font-weight: 600;
   color: var(--mb-accent);
-  text-align: center;
+  text-align: left;
   margin: 0;
-  max-width: 200px;
+  max-width: 280px;
   line-height: 1.4;
+  padding: 10px 14px;
+  border: 1px solid rgba(224, 67, 29, 0.3);
+  border-radius: 14px;
+  background: rgba(224, 67, 29, 0.08);
+  animation: mb-error-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mb-action-area__error::before {
+  content: '!';
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--mb-accent);
+  color: var(--mb-accent-text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+@keyframes mb-error-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.mb-action-area__success {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mb-green-dark);
+  text-align: left;
+  margin: 0;
+  max-width: 280px;
+  line-height: 1.4;
+  padding: 10px 14px;
+  border: 1px solid rgba(22, 163, 74, 0.3);
+  border-radius: 14px;
+  background: rgba(22, 163, 74, 0.08);
+  animation: mb-error-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mb-action-area__success::before {
+  content: '✓';
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--mb-green);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
 }
 @keyframes mb-btn-spin { to { transform: rotate(360deg); } }
 .mb-big-btn__spinner {
@@ -757,6 +846,11 @@
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
+  animation: mb-overlay-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes mb-overlay-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(14px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 .mb-overlay__header {
   display: flex;
@@ -764,6 +858,11 @@
   gap: 0.875rem;
   padding: 0 1.125rem;
   height: var(--mb-header-h);
+  /* Header grows into the status bar area and pads its content back down. */
+  height: calc(var(--mb-header-h) + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: calc(1.125rem + env(safe-area-inset-left, 0px));
+  padding-right: calc(1.125rem + env(safe-area-inset-right, 0px));
   background: var(--mb-green);
   color: white;
   flex-shrink: 0;
@@ -789,6 +888,7 @@
 .mb-overlay__body {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
 }
@@ -819,6 +919,8 @@
   border-radius: 50%;
   animation: mb-spin 0.8s linear infinite;
 }
+.mb-map-loading__icon { width: 2rem; height: 2rem; color: var(--mb-accent); }
+.mb-map-loading__icon svg { width: 100%; height: 100%; }
 .mb-map-loading__title { font-size: 0.9rem; font-weight: 700; color: var(--mb-green-dark); }
 .mb-map-loading__sub   { font-size: 0.75rem; color: var(--mb-text-muted); }
 
@@ -826,6 +928,10 @@
 
 .mb-overlay__info {
   padding: 1rem 1.125rem 1.5rem;
+  /* The confirm button sits at the bottom — keep it above the gesture bar. */
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(1.125rem + env(safe-area-inset-left, 0px));
+  padding-right: calc(1.125rem + env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   gap: 0.875rem;
@@ -844,6 +950,7 @@
 .mb-status-banner--inside  { background: var(--mb-green-light); color: var(--mb-green-dark); }
 .mb-status-banner--outside { background: var(--mb-red-light); color: var(--mb-red); }
 .mb-status-banner__icon { font-size: 1.25rem; flex-shrink: 0; }
+.mb-status-banner__icon svg { width: 1.25rem; height: 1.25rem; display: block; }
 .mb-status-banner__main { font-weight: 700; font-size: 0.9rem; }
 .mb-status-banner__sub  { font-size: 0.75rem; opacity: 0.8; font-weight: 500; margin-top: 0.1rem; }
 
@@ -1133,19 +1240,58 @@
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  min-height: 100dvh;
   gap: 1rem;
-  color: var(--mb-green);
-  background: var(--mb-green-bg);
+  padding: 2rem;
+  padding-top: calc(2rem + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+  color: var(--mb-muted-1);
+  background: var(--mb-paper);
 }
 .mb-loading__spinner {
   width: 2.5rem;
   height: 2.5rem;
-  border: 3px solid #bbf7d0;
-  border-top-color: var(--mb-green);
+  border: 3px solid var(--mb-card-border);
+  border-top-color: var(--mb-accent);
   border-radius: 50%;
   animation: mb-spin 0.8s linear infinite;
 }
-.mb-loading__text { font-size: 0.875rem; font-weight: 600; }
+.mb-loading__text {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mb-muted-3);
+}
+
+/* Inline loader for panels that load inside an already-rendered screen. */
+.mb-inline-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.5rem 1rem;
+  background: var(--mb-card);
+  border: 1px solid var(--mb-card-border);
+  border-radius: var(--mb-radius);
+}
+.mb-inline-loading__spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 2.5px solid var(--mb-card-border);
+  border-top-color: var(--mb-accent);
+  border-radius: 50%;
+  animation: mb-spin 0.8s linear infinite;
+}
+.mb-inline-loading__text {
+  font-family: 'Space Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--mb-muted-3);
+}
 
 /* ═══════════════════════════════════════════════════════════════
    PLANUNG TAB  (Schichtplan + Urlaub)
@@ -1169,6 +1315,7 @@
   justify-content: center;
   gap: 0.4rem;
   padding: 0.6rem 0.5rem;
+  min-height: 44px;
   border: none;
   border-radius: 12px;
   background: transparent;
@@ -1176,6 +1323,7 @@
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   transition: background 0.18s, color 0.18s;
 }
 .mb-planung-tab--active {
@@ -1266,9 +1414,13 @@
   border-radius: 999px;
 }
 .mb-shift-card__loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 0.72rem;
   color: var(--mb-text-muted);
 }
+.mb-shift-card__loc svg { width: 11px; height: 11px; flex-shrink: 0; }
 .mb-shift-card__note {
   font-size: 0.7rem;
   color: var(--mb-text-muted);
@@ -1440,4 +1592,30 @@
 }
 .mb-lang-btn:not(.mb-lang-btn--active):active {
   background: #f3f4f6;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   NATIVE SHELL  (classes are set by src/utils/nativeUi.js — the
+   browser never gets them, so these rules are inert on the web)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Kill the WebView rubber-band / pull-to-refresh on the document scroller. */
+body.native-app { overscroll-behavior-y: contain; }
+
+/* The soft keyboard already covers the bottom edge — a nav bar stacked on top
+   of it reads as a rendering glitch, so slide it away while typing. */
+body.keyboard-open .mb-nav {
+  transform: translateX(-50%) translateY(110%);
+  pointer-events: none;
+}
+body.keyboard-open .mb-main { padding-bottom: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mb-main--enter,
+  .mb-overlay,
+  .mb-notif-panel,
+  .mb-action-area__error,
+  .mb-action-area__success,
+  .mb-pulse-ring { animation: none; }
+  .mb-nav { transition: none; }
 }

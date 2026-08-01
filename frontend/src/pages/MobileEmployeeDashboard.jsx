@@ -10,6 +10,7 @@ import { useLanguage } from "../i18n/LanguageContext";
 import { localeDateTag } from "../i18n/locales";
 import { useNotifications } from "../utils/useNotifications";
 import { notifBodyLines, notifCategory, formatNotifRelativeTime } from "../utils/notificationDisplay";
+import { getCurrentPosition } from "../utils/geolocation";
 import "./MobileEmployeeDashboard.css";
 import "./MobileArbeitszeit.css";
 
@@ -108,6 +109,23 @@ const IcoStop = () => (
     <rect x="5" y="5" width="14" height="14" rx="2.5"/>
   </svg>
 );
+const IcoCalendar = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="18" rx="2"/>
+    <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+    <line x1="3" y1="10" x2="21" y2="10"/>
+  </svg>
+);
+const IcoCheckCircle = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><polyline points="8 12.5 10.8 15.5 16 9.5"/>
+  </svg>
+);
+const IcoAlertCircle = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="12" y1="7.5" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/>
+  </svg>
+);
 
 // ── Leaflet custom marker (avoids default icon issues) ─────────────────────────
 function makeIcon(color) {
@@ -127,6 +145,35 @@ function MapFly({ lat, lng }) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+// Known raw backend validation messages (currently English, see
+// backend/app/attendance_rules.py) mapped to a translated, user-facing
+// message. Anything unrecognized falls back to a generic translated
+// message instead of leaking the raw server text.
+const STAMP_ERROR_PATTERNS = [
+  [/outside/i, "errors.outsideArea"],
+  [/cannot check in twice/i, "errors.alreadyCheckedIn"],
+  [/cannot check out yet/i, "errors.notCheckedInYet"],
+  [/cannot check out twice/i, "errors.alreadyCheckedOut"],
+];
+
+function describeStampError(err, t) {
+  if (!err?.response) {
+    // No HTTP response at all: offline, DNS failure, timeout, CORS block, …
+    return t("errors.networkError");
+  }
+
+  const raw = String(err.response?.data?.message ?? err.response?.data?.detail ?? "");
+  const known = STAMP_ERROR_PATTERNS.find(([pattern]) => pattern.test(raw));
+  if (known) return t(known[1]);
+
+  // Non-ASCII text is most likely one of the backend's existing German
+  // messages (e.g. the location-assignment check) — safe to show as-is.
+  // Otherwise (empty, or looks like an untranslated technical string)
+  // fall back to a generic message rather than leaking raw server text.
+  return /[^\x00-\x7F]/.test(raw) ? raw : t("errors.stampFailed");
+}
+
 function fmtTime(iso, dateTag = "de-DE") {
   if (!iso) return null;
   const d = new Date(iso);
@@ -332,6 +379,10 @@ export function MobileEmployeeDashboard() {
   // Inline stamp state (big button)
   const [stampBusy,  setStampBusy]  = useState(false);
   const [stampError, setStampError] = useState(null);
+  const [stampSuccess, setStampSuccess] = useState(null);
+  const stampSuccessTimeoutRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(stampSuccessTimeoutRef.current), []);
 
   // GPS overlay state (kept for CheckinOverlay component)
   const [gps,       setGps]       = useState(null);
@@ -444,16 +495,16 @@ export function MobileEmployeeDashboard() {
     if (stampBusy) return;
     setStampBusy(true);
     setStampError(null);
+    setStampSuccess(null);
+    clearTimeout(stampSuccessTimeoutRef.current);
 
     // 1. GPS holen
     let coords;
     try {
       coords = await new Promise((resolve, reject) => {
-        if (!navigator.geolocation) { reject(new Error(t("errors.gpsUnavailable"))); return; }
-        navigator.geolocation.getCurrentPosition(
+        getCurrentPosition(
           pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
           err => reject(new Error(err.message || t("errors.locationError"))),
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
         );
       });
     } catch (err) {
@@ -507,10 +558,11 @@ export function MobileEmployeeDashboard() {
       }
 
       await Promise.all([fetchWorked(), fetchLogs(), fetchMySessions()]);
+
+      setStampSuccess(isCheckin ? t("overlay.checkInSuccess") : t("overlay.checkOutSuccess"));
+      stampSuccessTimeoutRef.current = setTimeout(() => setStampSuccess(null), 3000);
     } catch (err) {
-      const msg = err.response?.data?.message ?? err.response?.data?.detail ?? t("errors.stampFailed");
-      const isOutside = String(msg).toLowerCase().includes("outside") || String(msg).toLowerCase().includes("außerhalb");
-      setStampError(isOutside ? t("errors.outsideArea") : String(msg));
+      setStampError(describeStampError(err, t));
     } finally {
       setStampBusy(false);
     }
@@ -519,12 +571,10 @@ export function MobileEmployeeDashboard() {
   // ── Overlay: auto-start GPS ──────────────────────────────────────────────
   useEffect(() => {
     if (!overlay) { setGps(null); setGpsError(null); setApiResult(null); return; }
-    if (!navigator.geolocation) { setGpsError("GPS nicht verfügbar"); return; }
     setGpsBusy(true);
-    navigator.geolocation.getCurrentPosition(
+    getCurrentPosition(
       pos => { setGps({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setGpsBusy(false); },
       err  => { setGpsBusy(false); setGpsError(err.message || "Standortfehler"); },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
   }, [overlay]);
 
@@ -669,7 +719,8 @@ export function MobileEmployeeDashboard() {
       </header>
 
       {/* ─── Main content ─── */}
-      <main className="mb-main">
+      {/* key={tab} remounts the region so the enter animation replays per tab */}
+      <main className="mb-main mb-main--enter" key={tab}>
 
         {/* ══ DASHBOARD ══════════════════════════════════════════════════ */}
         {tab === "dashboard" && (
@@ -743,8 +794,11 @@ export function MobileEmployeeDashboard() {
                 )}
               </button>
 
+              {stampSuccess && (
+                <p className="mb-action-area__success" role="status">{stampSuccess}</p>
+              )}
               {stampError && (
-                <p className="mb-action-area__error">{stampError}</p>
+                <p className="mb-action-area__error" role="alert">{stampError}</p>
               )}
             </div>
           </>
@@ -910,7 +964,7 @@ export function MobileEmployeeDashboard() {
                 .slice(0, 5);
               if (myShifts.length === 0) return (
                 <div className="mb-empty">
-                  <div className="mb-empty__icon">📅</div>
+                  <div className="mb-empty__icon"><IcoCalendar /></div>
                   <p className="mb-empty__text">{t("planning.noShifts")}</p>
                 </div>
               );
@@ -934,7 +988,7 @@ export function MobileEmployeeDashboard() {
                             {s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}
                             {isNight && <span className="mb-shift-night">{t("planning.night")}</span>}
                           </span>
-                          {s.location_name && <span className="mb-shift-card__loc">📍 {s.location_name}</span>}
+                          {s.location_name && <span className="mb-shift-card__loc"><IcoLocation /> {s.location_name}</span>}
                           {s.note && <span className="mb-shift-card__note">{s.note}</span>}
                         </div>
                       </div>
@@ -954,7 +1008,7 @@ export function MobileEmployeeDashboard() {
                             </div>
                             <div className="mb-shift-card__right">
                               <span className="mb-shift-card__time">{s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}</span>
-                              {s.location_name && <span className="mb-shift-card__loc">📍 {s.location_name}</span>}
+                              {s.location_name && <span className="mb-shift-card__loc"><IcoLocation /> {s.location_name}</span>}
                             </div>
                           </div>
                         );
@@ -1073,7 +1127,10 @@ export function MobileEmployeeDashboard() {
             <p className="mb-notifications__sub">{t("notifications.sub")}</p>
 
             {notif.listLoading && notif.notifications.length === 0 ? (
-              <div className="mb-notif-empty">{t("common.loading")}</div>
+              <div className="mb-inline-loading">
+                <div className="mb-inline-loading__spinner" />
+                <span className="mb-inline-loading__text">{t("common.loading")}</span>
+              </div>
             ) : notif.notifications.length === 0 ? (
               <div className="mb-notifications__empty">
                 <IcoBell />
@@ -1233,7 +1290,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
           <div className="mb-map-loading">
             {gpsError ? (
               <>
-                <span style={{ fontSize: "2rem" }}>📍</span>
+                <span className="mb-map-loading__icon"><IcoLocation /></span>
                 <span className="mb-map-loading__title" style={{ color: "#dc2626" }}>{gpsError}</span>
               </>
             ) : (
@@ -1281,7 +1338,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
           {/* Success */}
           {apiResult?.success && (
             <div className="mb-status-banner mb-status-banner--inside">
-              <span className="mb-status-banner__icon">✅</span>
+              <span className="mb-status-banner__icon"><IcoCheckCircle /></span>
               <div>
                 <div className="mb-status-banner__main">
                   {isCheckin ? t("overlay.checkInSuccess") : t("overlay.checkOutSuccess")}
@@ -1294,7 +1351,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
           {/* Error */}
           {apiResult?.success === false && (
             <div className="mb-status-banner mb-status-banner--outside">
-              <span className="mb-status-banner__icon">⚠️</span>
+              <span className="mb-status-banner__icon"><IcoAlertCircle /></span>
               <div>
                 <div className="mb-status-banner__main">
                   {apiResult.isOutside ? t("overlay.outsideArea") : t("overlay.error")}
@@ -1307,7 +1364,7 @@ function CheckinOverlay({ type, gps, gpsBusy, gpsError, workplace, apiResult, ap
           {/* GPS found, no result yet: show status */}
           {gps && !apiResult && isInside !== null && (
             <div className={`mb-status-banner ${isInside ? "mb-status-banner--inside" : "mb-status-banner--outside"}`}>
-              <span className="mb-status-banner__icon">{isInside ? "✅" : "⚠️"}</span>
+              <span className="mb-status-banner__icon">{isInside ? <IcoCheckCircle /> : <IcoAlertCircle />}</span>
               <div>
                 <div className="mb-status-banner__main">
                   {isInside ? t("overlay.insideArea") : t("overlay.outsideArea")}

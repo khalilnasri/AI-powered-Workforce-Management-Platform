@@ -39,7 +39,11 @@
 .az-screen {
   background: var(--az-paper);
   min-height: calc(100dvh - 64px);
-  padding-bottom: 80px;
+  /* The app bar grows by the status-bar inset on native. */
+  min-height: calc(100dvh - 64px - env(safe-area-inset-top, 0px));
+  /* .mb-main already reserves room for the bottom nav; the extra 80px here
+     only produced dead space under the footer. */
+  padding-bottom: 8px;
   overflow-x: hidden;
 }
 

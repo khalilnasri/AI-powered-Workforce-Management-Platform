@@ -5,8 +5,10 @@ import { apiClient, clearToken } from "../apiClient";
 import { MobileEmployeeDashboard } from "./MobileEmployeeDashboard";
 import { NotificationDropdown } from "../components/NotificationDropdown";
 import { useNotifications } from "../utils/useNotifications";
+import { useIsMobile } from "../utils/useIsMobile";
 import { LanguageProvider, useLanguage } from "../i18n/LanguageContext";
 import { notifBodyLines, notifCategory, formatNotifRelativeTime } from "../utils/notificationDisplay";
+import { getCurrentPosition } from "../utils/geolocation";
 import "./EmployeeDashboard.css";
 
 const NOTIF_ENTITY_TAB = {
@@ -15,16 +17,6 @@ const NOTIF_ENTITY_TAB = {
   leave_request: "leave",
   attendance_log: "overview",
 };
-
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 640);
-  useEffect(() => {
-    const h = () => setIsMobile(window.innerWidth <= 640);
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
-  }, []);
-  return isMobile;
-}
 
 const ME_URL           = "/auth/me";
 const CHECKIN_URL      = "/attendance/checkin";
@@ -563,14 +555,9 @@ function DesktopEmployeeDashboard() {
     setAttendanceError(null);
     setAreaStatus(null);
 
-    if (!navigator.geolocation) {
-      setGpsError("Dieser Browser unterstützt keine Geolocation.");
-      return;
-    }
-
     setGpsBusy(true);
 
-    navigator.geolocation.getCurrentPosition(
+    getCurrentPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;

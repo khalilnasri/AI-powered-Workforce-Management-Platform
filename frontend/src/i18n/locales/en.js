@@ -136,6 +136,10 @@ export default {
     outsideArea: "Outside allowed area",
     outsideWorkArea: "Outside allowed work area",
     leaveFailed: "Could not submit request.",
+    alreadyCheckedIn: "You're already clocked in. Clock out first.",
+    notCheckedInYet: "You're not clocked in yet.",
+    alreadyCheckedOut: "You're already clocked out.",
+    networkError: "Can't reach the server. Please check your connection.",
   },
   overlay: {
     back: "Back",

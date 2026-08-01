@@ -136,6 +136,10 @@ export default {
     outsideArea: "Außerhalb des erlaubten Bereichs",
     outsideWorkArea: "Außerhalb des erlaubten Arbeitsbereichs",
     leaveFailed: "Antrag konnte nicht gesendet werden.",
+    alreadyCheckedIn: "Du bist bereits eingecheckt. Zuerst auschecken.",
+    notCheckedInYet: "Du bist noch nicht eingecheckt.",
+    alreadyCheckedOut: "Du bist bereits ausgecheckt.",
+    networkError: "Keine Verbindung zum Server. Bitte Internetverbindung prüfen.",
   },
   overlay: {
     back: "Zurück",

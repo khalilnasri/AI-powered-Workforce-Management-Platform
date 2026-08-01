@@ -136,6 +136,10 @@ export default {
     outsideArea: "Hors zone autorisée",
     outsideWorkArea: "Hors zone de travail",
     leaveFailed: "Demande non envoyée.",
+    alreadyCheckedIn: "Vous êtes déjà pointé(e). Pointez d'abord la sortie.",
+    notCheckedInYet: "Vous n'avez pas encore pointé l'entrée.",
+    alreadyCheckedOut: "Vous êtes déjà pointé(e) en sortie.",
+    networkError: "Impossible de joindre le serveur. Vérifiez votre connexion.",
   },
   overlay: {
     back: "Retour",

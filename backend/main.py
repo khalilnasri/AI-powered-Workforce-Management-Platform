@@ -266,6 +266,11 @@ app.add_middleware(
         
         "https://ai-powered-workforce-management-platform-33xn9jbdk.vercel.app",
         "https://ai-powered-workforce-management-git-3ac484-khalil-zeit-management.vercel.app",
+
+        # Capacitor (Android/iOS employee app) — additive, existing web origins unchanged.
+        "capacitor://localhost",
+        "https://localhost",
+        "http://localhost",
     ],
     allow_credentials=False,
     allow_methods=["*"],
