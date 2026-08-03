@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.admin_deps import require_admin
@@ -32,6 +32,11 @@ from app.schemas.approvals import (
     WorkSessionRejectRequest,
     WorkSessionResponse,
 )
+from app.services.attendance_automation import (
+    NO_SHIFT_OVERDUE_AFTER as _NO_SHIFT_OVERDUE_AFTER,
+    find_matching_shift as _find_matching_shift,
+    find_open_checkin_candidates,
+)
 from app.services.notification_messages import (
     attendance_force_checkout,
     attendance_reminder,
@@ -41,13 +46,9 @@ from app.services.notification_messages import (
     session_rejected,
 )
 from app.services.notification_service import create_notification
-from app.utils.shift_time import EARLY_CHECKIN_TOLERANCE, get_shift_end_datetime, shift_matches_time
+from app.utils.shift_time import get_shift_end_datetime
 
 _BERLIN = ZoneInfo("Europe/Berlin")
-
-# Fallback-Regel für Mitarbeiter ohne Schichtplan: nach dieser Dauer ohne
-# Checkout gilt ein Check-in als überfällig.
-_NO_SHIFT_OVERDUE_AFTER = timedelta(hours=12)
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +63,6 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
-def _find_matching_shift(shifts: list[ShiftPlan], checkin_time: datetime) -> ShiftPlan | None:
-    """
-    Aus den Kandidaten-Schichten eines Mitarbeiters diejenige wählen, deren
-    Zeitfenster (inkl. Nachtschicht-Tagesüberlauf und Toleranz vor
-    Schichtbeginn) ``checkin_time`` tatsächlich enthält. Bei mehreren
-    Treffern (z. B. Check-in kurz vor einer Nachtschicht, während die
-    vorherige Schicht noch offiziell läuft) wird die mit dem spätesten
-    Start gewählt – also die tatsächlich bevorstehende Schicht.
-    """
-    matches = [
-        s for s in shifts
-        if shift_matches_time(s, checkin_time, _BERLIN, early_tolerance=EARLY_CHECKIN_TOLERANCE)
-    ]
-    if not matches:
-        return None
-    return max(matches, key=lambda s: (s.shift_date, s.start_time))
-
-
 def _build_response(session: WorkSession, db: Session) -> WorkSessionResponse:
     emp      = db.get(Employee, session.employee_id)
     approver = db.get(Employee, session.approved_by_id) if session.approved_by_id else None
@@ -87,7 +70,7 @@ def _build_response(session: WorkSession, db: Session) -> WorkSessionResponse:
     # Original-Stempelzeiten aus attendance_logs laden (nur bei korrigierten Sessions)
     original_checkin_time  = None
     original_checkout_time = None
-    if session.status == "corrected":
+    if session.status in ("corrected", "auto_checkout"):
         if session.checkin_log_id:
             att_in = db.get(Attendance, session.checkin_log_id)
             if att_in:
@@ -163,7 +146,7 @@ def approve_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
-    if session.status != "pending":
+    if session.status not in ("pending", "no_show_pending"):
         raise HTTPException(status_code=400, detail="Nur ausstehende Sessions können genehmigt werden.")
 
     session.status         = "approved"
@@ -198,7 +181,7 @@ def reject_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
-    if session.status != "pending":
+    if session.status not in ("pending", "no_show_pending"):
         raise HTTPException(status_code=400, detail="Nur ausstehende Sessions können abgelehnt werden.")
 
     session.status           = "rejected"
@@ -233,10 +216,10 @@ def correct_session(
     session = db.get(WorkSession, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session nicht gefunden.")
-    if session.status not in ("pending", "rejected"):
+    if session.status not in ("pending", "rejected", "corrected", "auto_checkout"):
         raise HTTPException(
             status_code=400,
-            detail="Nur ausstehende oder abgelehnte Sessions können korrigiert werden.",
+            detail="Nur ausstehende, abgelehnte, korrigierte oder automatisch genehmigte Sessions können korrigiert werden.",
         )
 
     checkin_time  = _ensure_utc(body.checkin_time)
@@ -329,48 +312,15 @@ def list_overdue_checkouts(
     """
     now_utc = datetime.now(UTC)
 
-    # Letztes Ereignis je Mitarbeiter ermitteln
-    latest_sub = (
-        select(Attendance.employee_id, func.max(Attendance.created_at).label("latest"))
-        .group_by(Attendance.employee_id)
-        .subquery()
-    )
-
-    open_checkins = db.scalars(
-        select(Attendance)
-        .join(
-            latest_sub,
-            (Attendance.employee_id == latest_sub.c.employee_id)
-            & (Attendance.created_at == latest_sub.c.latest),
-        )
-        .where(Attendance.log_type == "checkin")
-    ).all()
-
     result: list[OverdueCheckoutOut] = []
-    for checkin in open_checkins:
-        emp = db.get(Employee, checkin.employee_id)
-        if emp is None or not emp.is_active:
-            continue
-
+    for c in find_open_checkin_candidates(db):
         checkin_aware = (
-            checkin.created_at if checkin.created_at.tzinfo
-            else checkin.created_at.replace(tzinfo=UTC)
+            c.checkin.created_at if c.checkin.created_at.tzinfo
+            else c.checkin.created_at.replace(tzinfo=UTC)
         )
         checkin_local_date = checkin_aware.astimezone(_BERLIN).date()
 
-        # Kandidaten-Schichten: Start am Check-in-Tag oder am Vortag (deckt
-        # Nachtschichten ab, deren Zeitfenster erst nach Mitternacht in den
-        # Check-in-Tag hineinreicht).
-        candidate_shifts = db.scalars(
-            select(ShiftPlan)
-            .where(ShiftPlan.employee_id == checkin.employee_id)
-            .where(ShiftPlan.shift_date >= checkin_local_date - timedelta(days=1))
-            .where(ShiftPlan.shift_date <= checkin_local_date)
-        ).all()
-
-        shift = _find_matching_shift(candidate_shifts, checkin_aware)
-
-        if shift is None:
+        if c.shift is None:
             # Kein zum Check-in passender Schichtplan → Fallback: fester
             # Zeitraum ab Check-in statt geplantem Schichtende.
             shift_end_utc = checkin_aware + _NO_SHIFT_OVERDUE_AFTER
@@ -379,10 +329,10 @@ def list_overdue_checkouts(
 
             result.append(
                 OverdueCheckoutOut(
-                    employee_id=emp.id,
-                    employee_name=emp.name,
+                    employee_id=c.employee.id,
+                    employee_name=c.employee.name,
                     checkin_time=checkin_aware,
-                    checkin_log_id=checkin.id,
+                    checkin_log_id=c.checkin.id,
                     shift_date=checkin_local_date,
                     shift_end=shift_end_utc,
                     location_id=None,
@@ -391,22 +341,20 @@ def list_overdue_checkouts(
             )
             continue
 
-        shift_end_utc = get_shift_end_datetime(shift, _BERLIN).astimezone(UTC)
-
-        if now_utc <= shift_end_utc:
+        if now_utc <= c.shift_end_utc:
             continue  # Schicht läuft noch
 
-        loc = db.get(WorkplaceLocation, shift.location_id) if shift.location_id else None
+        loc = db.get(WorkplaceLocation, c.shift.location_id) if c.shift.location_id else None
 
         result.append(
             OverdueCheckoutOut(
-                employee_id=emp.id,
-                employee_name=emp.name,
+                employee_id=c.employee.id,
+                employee_name=c.employee.name,
                 checkin_time=checkin_aware,
-                checkin_log_id=checkin.id,
-                shift_date=shift.shift_date,
-                shift_end=shift_end_utc,
-                location_id=shift.location_id,
+                checkin_log_id=c.checkin.id,
+                shift_date=c.shift.shift_date,
+                shift_end=c.shift_end_utc,
+                location_id=c.shift.location_id,
                 location_name=loc.name if loc else None,
             )
         )

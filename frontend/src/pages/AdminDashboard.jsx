@@ -848,10 +848,12 @@ function Badge({ type }) {
 
 function ApprovalBadge({ status }) {
   const map = {
-    pending:   ["ad-badge--yellow", "Ausstehend"],
-    approved:  ["ad-badge--green",  "Genehmigt"],
-    rejected:  ["ad-badge--red",    "Abgelehnt"],
-    corrected: ["ad-badge--blue",   "Korrigiert"],
+    pending:          ["ad-badge--yellow", "Ausstehend"],
+    approved:         ["ad-badge--green",  "Genehmigt"],
+    rejected:         ["ad-badge--red",    "Abgelehnt"],
+    corrected:        ["ad-badge--blue",   "Korrigiert"],
+    auto_checkout:    ["ad-badge--purple", "Automatisch genehmigt"],
+    no_show_pending:  ["ad-badge--orange", "No-Show"],
   };
   const [cls, label] = map[status] ?? ["ad-badge--gray", status];
   return <span className={`ad-badge ${cls}`}>{label}</span>;
@@ -1249,7 +1251,7 @@ export function AdminDashboard() {
       ]);
       setStatistics(sRes.data ?? null);
       const allA = appRes.data ?? [];
-      setPendingCount(allA.filter((a) => a.status === "pending").length);
+      setPendingCount(allA.filter((a) => a.status === "pending" || a.status === "no_show_pending").length);
       setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
       setRejectedCount(allA.filter((a) => a.status === "rejected").length);
       try {
@@ -1298,7 +1300,7 @@ export function AdminDashboard() {
     try {
       const appRes = await apiClient.get("/admin/approvals/work-sessions");
       const allA = appRes.data ?? [];
-      setPendingCount(allA.filter((a) => a.status === "pending").length);
+      setPendingCount(allA.filter((a) => a.status === "pending" || a.status === "no_show_pending").length);
       setCorrectedCount(allA.filter((a) => a.status === "corrected").length);
       setRejectedCount(allA.filter((a) => a.status === "rejected").length);
     } catch { /* counts stay at previous value */ }
@@ -1319,7 +1321,7 @@ export function AdminDashboard() {
       try {
         const res = await apiClient.get("/admin/approvals/work-sessions");
         const all = res.data ?? [];
-        setPendingCount(all.filter((a) => a.status === "pending").length);
+        setPendingCount(all.filter((a) => a.status === "pending" || a.status === "no_show_pending").length);
         setCorrectedCount(all.filter((a) => a.status === "corrected").length);
         setRejectedCount(all.filter((a) => a.status === "rejected").length);
       } catch { /* noop */ }
@@ -3559,8 +3561,8 @@ export function AdminDashboard() {
                                   <td className="ad-muted">—</td>
                                   <td><strong>{fmtMinutes(row.work_minutes)}</strong></td>
                                   <td>
-                                    <span className={`ad-badge ad-badge--${{ approved:"green", corrected:"blue", rejected:"red", pending:"yellow" }[row.status] ?? "gray"}`}>
-                                      {{ approved:"Genehmigt", corrected:"Korrigiert", rejected:"Abgelehnt", pending:"Ausstehend" }[row.status] ?? row.status}
+                                    <span className={`ad-badge ad-badge--${{ approved:"green", corrected:"blue", rejected:"red", pending:"yellow", auto_checkout:"purple", no_show_pending:"orange" }[row.status] ?? "gray"}`}>
+                                      {{ approved:"Genehmigt", corrected:"Korrigiert", rejected:"Abgelehnt", pending:"Ausstehend", auto_checkout:"Automatisch genehmigt", no_show_pending:"No-Show" }[row.status] ?? row.status}
                                     </span>
                                   </td>
                                 </tr>
@@ -4272,7 +4274,9 @@ export function AdminDashboard() {
                       onChange={(e) => setApprovalFilterStatus(e.target.value)} disabled={approvalsLoading}>
                       <option value="">— Alle —</option>
                       <option value="pending">Offen / Ausstehend</option>
+                      <option value="no_show_pending">No-Show</option>
                       <option value="approved">Genehmigt</option>
+                      <option value="auto_checkout">Automatisch genehmigt</option>
                       <option value="corrected">Korrigiert</option>
                       <option value="rejected">Abgelehnt</option>
                       <option value="overdue">Überfälliger Checkout</option>
@@ -4432,7 +4436,7 @@ export function AdminDashboard() {
                               <td><ApprovalBadge status={session.status} /></td>
                               <td>
                                 <div className="ad-actions">
-                                  {session.status === "pending" && (
+                                  {(session.status === "pending" || session.status === "no_show_pending") && (
                                     <>
                                       <button className="ad-btn ad-btn--sm ad-btn--success"
                                         onClick={() => handleApproveSession(session.id)} disabled={approvalBusy}>
@@ -4445,10 +4449,12 @@ export function AdminDashboard() {
                                       </button>
                                     </>
                                   )}
-                                  <button className="ad-btn ad-btn--sm ad-btn--ghost"
-                                    onClick={() => startCorrect(session)} disabled={approvalBusy}>
-                                    Korrigieren
-                                  </button>
+                                  {session.status !== "no_show_pending" && (
+                                    <button className="ad-btn ad-btn--sm ad-btn--ghost"
+                                      onClick={() => startCorrect(session)} disabled={approvalBusy}>
+                                      Korrigieren
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     className="ad-btn ad-btn--sm ad-btn--danger"

@@ -149,6 +149,58 @@ def attendance_force_checkout(
     return ("attendance.force_checkout", f"Admin-Checkout ({day})", body)
 
 
+def attendance_auto_checkout_employee(
+    checkin_at: datetime,
+    checkout_at: datetime,
+    duration_seconds: int,
+) -> tuple[str, str, str]:
+    day = _fmt_date(checkin_at)
+    body = (
+        "Automatischer Checkout nach Schichtende.\n"
+        f"Datum: {day}\n"
+        f"Einstempeln: {_fmt_time(checkin_at)} Uhr\n"
+        f"Ausstempeln: {_fmt_time(checkout_at)} Uhr\n"
+        f"Dauer: {_fmt_duration(duration_seconds)}\n"
+        f"Die Zeiten entsprechen deiner geplanten Schicht und sind bereits genehmigt."
+    )
+    return ("attendance.auto_checkout", f"Automatisch ausgecheckt ({day})", body)
+
+
+def attendance_auto_checkout_admin(
+    employee_name: str,
+    checkin_at: datetime,
+    checkout_at: datetime,
+    duration_seconds: int,
+) -> tuple[str, str, str]:
+    day = _fmt_date(checkin_at)
+    body = (
+        f"{employee_name} wurde automatisch nach Schichtende ausgecheckt und genehmigt.\n"
+        f"Datum: {day}\n"
+        f"Zeit: {_fmt_time(checkin_at)} – {_fmt_time(checkout_at)} Uhr\n"
+        f"Dauer: {_fmt_duration(duration_seconds)}"
+    )
+    return ("attendance.auto_checkout", f"Automatischer Checkout: {employee_name} ({day})", body)
+
+
+def attendance_no_show(employee_name: str, shift: ShiftPlan) -> tuple[str, str, str]:
+    slot = _fmt_shift_slot(shift.shift_date, shift.start_time, shift.end_time)
+    body = (
+        f"{employee_name} ist nicht zur geplanten Schicht eingecheckt.\n"
+        f"Termin: {slot}\n"
+        f"Bitte prüfen und in den Genehmigungen entscheiden."
+    )
+    return ("attendance.no_show", f"Nicht eingecheckt: {employee_name}", body)
+
+
+def attendance_overdue_alert(employee_name: str, checkin_at: datetime) -> tuple[str, str, str]:
+    body = (
+        f"{employee_name} ist seit {_fmt_time(checkin_at)} Uhr ({_fmt_date(checkin_at)}) eingestempelt "
+        f"und noch nicht ausgecheckt (kein Schichtplan hinterlegt).\n"
+        f"Bitte prüfen."
+    )
+    return ("attendance.overdue_alert", f"Überfällig: {employee_name}", body)
+
+
 # ── Urlaub ────────────────────────────────────────────────────────────────────
 
 def leave_approved(start: date, end: date, admin: Employee) -> tuple[str, str, str]:

@@ -17,7 +17,7 @@ class WorkSessionResponse(BaseModel):
     checkout_time:    datetime | None = None
     duration_seconds: int
 
-    status: str  # pending | approved | rejected | corrected
+    status: str  # pending | approved | rejected | corrected | auto_checkout | no_show_pending
 
     approved_by_id:   int | None = None
     approved_by_name: str | None = None

@@ -31,7 +31,7 @@ class WorkSession(Base):
     checkout_time    = Column(DateTime(timezone=True), nullable=True)
     duration_seconds = Column(Integer, nullable=False, default=0)
 
-    # pending | approved | rejected | corrected
+    # pending | approved | rejected | corrected | auto_checkout | no_show_pending
     status           = Column(String(20), nullable=False, default="pending",
                               server_default="pending")
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 
-from app.config.database import IS_SQLITE, engine, init_db
+from app.config.database import IS_SQLITE, SessionLocal, engine, init_db
 from app.routes import admin as admin_routes
 from app.routes import attendance as attendance_routes
 from app.routes import auth as auth_routes
@@ -20,8 +21,29 @@ from app.routes import reports as reports_routes
 from app.routes import ai as ai_routes
 from app.routes import notifications as notifications_routes
 from app.routes import employee_notifications as employee_notifications_routes
+from app.services.attendance_automation import run_attendance_automation_tick
 
 logger = logging.getLogger(__name__)
+
+# Intervall des Hintergrundjobs (Auto-Checkout, No-Show-Erkennung, Überfällig-Alerts).
+ATTENDANCE_AUTOMATION_INTERVAL_SECONDS = 120
+
+
+def _run_attendance_automation_tick_sync() -> None:
+    """Läuft via ``asyncio.to_thread`` — eigene DB-Session, synchroner SQLAlchemy-Engine."""
+    db = SessionLocal()
+    try:
+        run_attendance_automation_tick(db)
+    except Exception:
+        logger.exception("Attendance-Automation-Tick fehlgeschlagen.")
+    finally:
+        db.close()
+
+
+async def _attendance_automation_loop() -> None:
+    while True:
+        await asyncio.sleep(ATTENDANCE_AUTOMATION_INTERVAL_SECONDS)
+        await asyncio.to_thread(_run_attendance_automation_tick_sync)
 
 
 @asynccontextmanager
@@ -39,7 +61,13 @@ async def lifespan(app: FastAPI):
             "POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB. "
             "On Windows, prefer split POSTGRES_* vars so passwords with ü etc. are encoded reliably."
         )
-    yield
+
+    automation_task = asyncio.create_task(_attendance_automation_loop())
+    try:
+        yield
+    finally:
+        automation_task.cancel()
+        await asyncio.gather(automation_task, return_exceptions=True)
 
 
 def _migrate_db() -> None:
