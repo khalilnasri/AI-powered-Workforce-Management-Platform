@@ -40,8 +40,12 @@ from app.utils.shift_time import (
 _BERLIN = ZoneInfo("Europe/Berlin")
 
 # Nach dieser Zeit nach geplantem Schichtende wird automatisch ausgecheckt
-# bzw. eine Schicht ohne Checkin als No-Show erkannt.
-AUTO_CHECKOUT_GRACE = timedelta(minutes=15)
+# (Mitarbeiter war eingecheckt, hat aber vergessen auszuchecken).
+AUTO_CHECKOUT_GRACE = timedelta(hours=1)
+
+# Nach dieser Zeit nach geplantem Schichtende wird eine Schicht ganz ohne
+# Checkin als No-Show erkannt.
+NO_SHOW_GRACE = timedelta(minutes=15)
 
 # Fallback-Regel für Mitarbeiter ohne Schichtplan: nach dieser Dauer ohne
 # Checkout gilt ein Check-in als überfällig (proaktive Admin-Erinnerung).
@@ -262,7 +266,7 @@ def _process_no_shows(db: Session, now_utc: datetime) -> int:
 
     for shift in candidate_shifts:
         shift_end_utc = get_shift_end_datetime(shift, _BERLIN).astimezone(UTC)
-        if now_utc <= shift_end_utc + AUTO_CHECKOUT_GRACE:
+        if now_utc <= shift_end_utc + NO_SHOW_GRACE:
             continue
         if shift_end_utc < cutoff_start:
             continue
