@@ -3298,7 +3298,15 @@ export function AdminDashboard() {
                             <td>{row.employee_email}</td>
                             <td><Badge type={row.type} /></td>
                             <td>{formatTime(row.created_at)}</td>
-                            <td className="ad-mono">{row.lat?.toFixed(5)}, {row.lng?.toFixed(5)}</td>
+                            <td className="ad-mono">
+                              {row.lat != null && row.lng != null ? (
+                                <>
+                                  {resolveAttendanceLocation(row.lat, row.lng)}
+                                  <br />
+                                  <span className="ad-att-gps-coords">{row.lat.toFixed(5)}, {row.lng.toFixed(5)}</span>
+                                </>
+                              ) : "—"}
+                            </td>
                           </tr>
                         ))
                       )}
