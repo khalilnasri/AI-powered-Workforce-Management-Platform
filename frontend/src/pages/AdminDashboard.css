@@ -1914,6 +1914,7 @@
 .ad-empty { color: var(--text-4); text-align: center; padding: 2rem 0; font-size: 0.875rem; }
 .ad-mono  { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.775rem; white-space: nowrap; }
 .ad-muted { color: var(--text-4); }
+.ad-att-gps-coords { color: var(--text-4); font-size: 0.7rem; }
 
 /* ══════════════════════════════════════════════════════════════════════
    LOCATION SECTION
