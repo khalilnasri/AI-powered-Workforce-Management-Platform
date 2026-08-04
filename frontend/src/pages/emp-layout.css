@@ -178,6 +178,24 @@
   background: #eff5ff;
 }
 .emp-list-row--muted { opacity: 0.55; }
+.emp-list-row--dragging { opacity: 0.4; }
+.emp-list-row--drop-target {
+  border-top: 2px solid #1d4ed8;
+}
+
+.emp-list-row__handle {
+  flex-shrink: 0;
+  width: 14px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cbd5e1;
+  cursor: grab;
+  touch-action: none;
+}
+.emp-list-row__handle:active { cursor: grabbing; }
+.emp-list-row__handle svg { pointer-events: none; }
 
 .emp-list-row__avatar {
   flex-shrink: 0;

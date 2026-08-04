@@ -932,6 +932,10 @@ function AdminLeaveModalStatCards({ emp }) {
   );
 }
 
+// Rein visuelle, per Drag & Drop wählbare Reihenfolge der Mitarbeiterliste —
+// nur lokal im Browser gespeichert, keine Backend-Persistenz.
+const EMP_ORDER_STORAGE_KEY = "timestemple_admin_employee_order";
+
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ════════════════════════════════════════════════════════════════════════════
@@ -941,6 +945,17 @@ export function AdminDashboard() {
 
   // ── Data ───────────────────────────────────────────────────────────────────
   const [employees,  setEmployees]  = useState([]);
+  const [empOrder, setEmpOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(EMP_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [dragEmpId, setDragEmpId] = useState(null);
+  const [dragOverEmpId, setDragOverEmpId] = useState(null);
   const [locations,  setLocations]  = useState([]);
   const [attendance, setAttendance] = useState([]);
   const [statistics, setStatistics] = useState(null);
@@ -1662,6 +1677,43 @@ export function AdminDashboard() {
     } finally {
       setEmpDeactivateBusy(false);
     }
+  }
+
+  // ── Mitarbeiterliste per Drag & Drop umsortieren (rein visuell, nur localStorage) ──
+  function persistEmpOrder(idsInOrder) {
+    setEmpOrder(idsInOrder);
+    try {
+      localStorage.setItem(EMP_ORDER_STORAGE_KEY, JSON.stringify(idsInOrder));
+    } catch {
+      // localStorage nicht verfügbar (z.B. Privatmodus) — Reihenfolge bleibt nur im State
+    }
+  }
+
+  function handleEmpRowDrop(targetId) {
+    if (dragEmpId == null || dragEmpId === targetId) {
+      setDragEmpId(null);
+      setDragOverEmpId(null);
+      return;
+    }
+    const ids = employees.map((e) => e.id);
+    const known = empOrder.filter((id) => ids.includes(id));
+    const rest = ids.filter((id) => !known.includes(id));
+    const current = [...known, ...rest];
+
+    const from = current.indexOf(dragEmpId);
+    const to = current.indexOf(targetId);
+    if (from === -1 || to === -1) {
+      setDragEmpId(null);
+      setDragOverEmpId(null);
+      return;
+    }
+    const next = [...current];
+    next.splice(from, 1);
+    next.splice(to, 0, dragEmpId);
+
+    persistEmpOrder(next);
+    setDragEmpId(null);
+    setDragOverEmpId(null);
   }
 
   // ── Location handlers ─────────────────────────────────────────────────────
@@ -2728,11 +2780,21 @@ export function AdminDashboard() {
           )}
 
           {activeSection === "employees" && (() => {
-            const empListFiltered = employees.filter((e) =>
+            // Gespeicherte Drag&Drop-Reihenfolge anwenden; unbekannte/neue
+            // Mitarbeiter-IDs hängen in ihrer natürlichen Reihenfolge hinten an.
+            const knownOrder = empOrder.filter((id) => employees.some((e) => e.id === id));
+            const restIds = employees.map((e) => e.id).filter((id) => !knownOrder.includes(id));
+            const orderIndex = new Map([...knownOrder, ...restIds].map((id, i) => [id, i]));
+            const orderedEmployees = [...employees].sort(
+              (a, b) => (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0)
+            );
+
+            const empListFiltered = orderedEmployees.filter((e) =>
               !empListSearch ||
               e.name.toLowerCase().includes(empListSearch.toLowerCase()) ||
               e.email.toLowerCase().includes(empListSearch.toLowerCase())
             );
+            const empListDraggable = !empListSearch;
             const selectedEmp = employees.find((e) => e.id === selectedEmpId) ?? null;
             const selPct = selectedEmp
               ? Math.min(100, ((selectedEmp.hours_official_month ?? 0) / (selectedEmp.hours_target_month ?? 160)) * 100)
@@ -2809,12 +2871,26 @@ export function AdminDashboard() {
                           {empListFiltered.map((row) => (
                             <div
                               key={row.id}
-                              className={`emp-list-row${selectedEmpId === row.id ? " emp-list-row--active" : ""}${!row.is_active ? " emp-list-row--muted" : ""}`}
+                              className={`emp-list-row${selectedEmpId === row.id ? " emp-list-row--active" : ""}${!row.is_active ? " emp-list-row--muted" : ""}${dragEmpId === row.id ? " emp-list-row--dragging" : ""}${dragOverEmpId === row.id && dragEmpId !== row.id ? " emp-list-row--drop-target" : ""}`}
                               onClick={() => setSelectedEmpId(row.id)}
                               role="button"
                               tabIndex={0}
                               onKeyDown={(e) => e.key === "Enter" && setSelectedEmpId(row.id)}
+                              draggable={empListDraggable}
+                              onDragStart={() => setDragEmpId(row.id)}
+                              onDragOver={(e) => { e.preventDefault(); if (dragEmpId != null) setDragOverEmpId(row.id); }}
+                              onDrop={(e) => { e.preventDefault(); handleEmpRowDrop(row.id); }}
+                              onDragEnd={() => { setDragEmpId(null); setDragOverEmpId(null); }}
                             >
+                              {empListDraggable && (
+                                <span className="emp-list-row__handle" title="Ziehen zum Umsortieren" onClick={(e) => e.stopPropagation()}>
+                                  <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+                                    <circle cx="2" cy="2" r="1.4" /><circle cx="8" cy="2" r="1.4" />
+                                    <circle cx="2" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" />
+                                    <circle cx="2" cy="14" r="1.4" /><circle cx="8" cy="14" r="1.4" />
+                                  </svg>
+                                </span>
+                              )}
                               <div className="emp-list-row__avatar" style={{ background: avatarColorForName(row.name) }}>
                                 {row.name?.[0]?.toUpperCase() ?? "?"}
                               </div>
