@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -238,11 +238,22 @@ def _row_result(row: shift_import.ParsedImportRow) -> ShiftImportRowResult:
 
 @router.get("/shifts/import/template")
 def download_import_template(
+    year: int | None = Query(default=None, ge=2000, le=2100),
+    month: int | None = Query(default=None, ge=1, le=12),
     db: Session = Depends(get_db),
     _: Employee = Depends(require_admin),
 ):
-    """Excel-Vorlage für den Schichtplan-Import herunterladen."""
-    buf = shift_import.build_template_workbook(db)
+    """Excel-Vorlage für den Schichtplan-Import herunterladen.
+
+    Ohne ``year``/``month`` wird wie bisher der auf heute folgende Kalendermonat
+    verwendet. Beide Parameter müssen zusammen angegeben werden.
+    """
+    if (year is None) != (month is None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="year und month müssen zusammen angegeben werden.",
+        )
+    buf = shift_import.build_template_workbook(db, year=year, month=month)
     return StreamingResponse(
         iter([buf.read()]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

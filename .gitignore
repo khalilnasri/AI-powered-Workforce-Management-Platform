@@ -58,3 +58,16 @@ coverage/
 .coverage
 htmlcov/
 .nyc_output/
+
+# Mobile build artifacts (local only)
+frontend/android/
+frontend/dist-mobile/
+
+# Local secrets / client config (never commit)
+client_id
+
+# Claude Code / Ruflo local state (never commit)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
