@@ -983,6 +983,8 @@ export function AdminDashboard() {
   const [showShiftForm,    setShowShiftForm]    = useState(false);
 
   // ── Schichtplan-Import (Excel) ────────────────────────────────────────────
+  const [showTemplateMonthModal, setShowTemplateMonthModal] = useState(false);
+  const [templateMonthValue,     setTemplateMonthValue]     = useState("");
   const [showImportModal, setShowImportModal] = useState(false);
   const [importFile,      setImportFile]      = useState(null);
   const [importPreview,   setImportPreview]   = useState(null);
@@ -2163,9 +2165,11 @@ export function AdminDashboard() {
   }
 
   // ── Schichtplan-Import (Excel) ─────────────────────────────────────────────
-  async function handleDownloadImportTemplate() {
+  /** @param {{year: number, month: number}} [chosenMonth] Optional — sonst nimmt das Backend den Folgemonat. */
+  async function handleDownloadImportTemplate(chosenMonth) {
     try {
-      const res = await apiClient.get(SHIFTS_IMPORT_TEMPLATE_URL, { responseType: "blob" });
+      const params = chosenMonth ? { year: chosenMonth.year, month: chosenMonth.month } : undefined;
+      const res = await apiClient.get(SHIFTS_IMPORT_TEMPLATE_URL, { params, responseType: "blob" });
       const disposition = res.headers["content-disposition"] || "";
       const match = disposition.match(/filename="?([^"]+)"?/);
       const filename = match ? match[1] : "schichtplan_vorlage.xlsx";
@@ -2175,6 +2179,24 @@ export function AdminDashboard() {
       const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
       URL.revokeObjectURL(url);
     } catch { alert("Vorlage konnte nicht heruntergeladen werden."); }
+  }
+
+  /** Öffnet die Monatsauswahl vor dem Vorlagen-Download, vorbelegt mit dem Folgemonat. */
+  function openTemplateMonthModal() {
+    const next = new Date();
+    next.setDate(1);
+    next.setMonth(next.getMonth() + 1);
+    const yyyy = next.getFullYear();
+    const mm = String(next.getMonth() + 1).padStart(2, "0");
+    setTemplateMonthValue(`${yyyy}-${mm}`);
+    setShowTemplateMonthModal(true);
+  }
+
+  function confirmTemplateMonthModal() {
+    const [yyyy, mm] = templateMonthValue.split("-").map(Number);
+    if (!yyyy || !mm) { alert("Bitte einen gültigen Monat wählen."); return; }
+    setShowTemplateMonthModal(false);
+    handleDownloadImportTemplate({ year: yyyy, month: mm });
   }
 
   function openImportModal() {
@@ -3785,7 +3807,7 @@ export function AdminDashboard() {
                     </button>
                     <button
                       className="ad-btn ad-btn--ghost"
-                      onClick={handleDownloadImportTemplate}
+                      onClick={openTemplateMonthModal}
                     >
                       <span className="ad-btn__icon">📥</span>
                       Excel-Vorlage herunterladen
@@ -4957,6 +4979,66 @@ export function AdminDashboard() {
 
         </main>
       </div>
+
+      {showTemplateMonthModal && (
+        <div
+          className="ad-modal-backdrop"
+          role="presentation"
+          onClick={(ev) => { if (ev.target === ev.currentTarget) setShowTemplateMonthModal(false); }}
+        >
+          <div
+            className="ad-modal ad-modal--confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ad-template-month-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="ad-modal__header">
+              <div>
+                <h2 id="ad-template-month-title" className="ad-modal__title">Für welchen Monat?</h2>
+                <p className="ad-modal__subtitle">Die Excel-Vorlage wird mit allen Tagen dieses Monats erzeugt.</p>
+              </div>
+              <button
+                type="button"
+                className="ad-modal__close"
+                onClick={() => setShowTemplateMonthModal(false)}
+                aria-label="Schließen"
+              >
+                ×
+              </button>
+            </div>
+            <div className="ad-modal__body">
+              <div className="ad-field">
+                <label>Monat</label>
+                <input
+                  className="ad-input"
+                  type="month"
+                  value={templateMonthValue}
+                  onChange={(e) => setTemplateMonthValue(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="ad-modal__footer ad-modal__footer--modal-end">
+                <button
+                  type="button"
+                  className="ad-btn ad-btn--ghost"
+                  onClick={() => setShowTemplateMonthModal(false)}
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="button"
+                  className="ad-btn ad-btn--primary"
+                  onClick={confirmTemplateMonthModal}
+                  disabled={!templateMonthValue}
+                >
+                  Vorlage herunterladen
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showImportModal && (
         <div

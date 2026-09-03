@@ -71,14 +71,19 @@ def _load_openpyxl():
         ) from exc
 
 
+def _month_dates(year: int, month: int) -> list[date]:
+    """Alle Kalendertage des angegebenen Monats."""
+    days_in_month = calendar.monthrange(year, month)[1]
+    return [date(year, month, day) for day in range(1, days_in_month + 1)]
+
+
 def _next_month_dates(today: date) -> list[date]:
-    """Alle Kalendertage des auf ``today`` folgenden Monats."""
+    """Alle Kalendertage des auf ``today`` folgenden Monats (Default, falls kein Monat gewählt wurde)."""
     year, month = today.year, today.month + 1
     if month > 12:
         month = 1
         year += 1
-    days_in_month = calendar.monthrange(year, month)[1]
-    return [date(year, month, day) for day in range(1, days_in_month + 1)]
+    return _month_dates(year, month)
 
 
 def _safe_sheet_name(raw: str, used: set[str]) -> str:
@@ -99,12 +104,15 @@ def _sheet_ref(sheet_name: str, cell: str = "A1") -> str:
     return f"#'{sheet_name.replace(chr(39), chr(39) * 2)}'!{cell}"
 
 
-def build_template_workbook(db: Session) -> io.BytesIO:
+def build_template_workbook(db: Session, year: int | None = None, month: int | None = None) -> io.BytesIO:
     """
     Erzeugt die herunterladbare Excel-Vorlage: eine Anleitungs-Übersicht, die
     Nachschlage-Sheets "Mitarbeiterliste"/"Standorte" (mit Sprunglinks) sowie
-    ein eigenes Tabellenblatt pro aktivem Mitarbeiter mit dem kompletten
-    nächsten Kalendermonat vorausgefüllt (Datum + Standardstandort; Von/Bis leer).
+    ein eigenes Tabellenblatt pro aktivem Mitarbeiter mit dem gewählten
+    Kalendermonat vorausgefüllt (Datum + Standardstandort; Von/Bis leer).
+
+    Wird kein ``year``/``month`` übergeben, wird wie bisher der auf heute
+    folgende Kalendermonat verwendet (Default).
     """
     openpyxl, Alignment, Font, PatternFill, get_column_letter = _load_openpyxl()
     from openpyxl.styles import Border, Side
@@ -154,7 +162,7 @@ def build_template_workbook(db: Session) -> io.BytesIO:
     locations_by_id = {loc.id: loc.name for loc in locations}
     default_location = locations[0].name if locations else ""
 
-    month_dates = _next_month_dates(date.today())
+    month_dates = _month_dates(year, month) if year and month else _next_month_dates(date.today())
     month_label = month_dates[0].strftime("%B %Y") if month_dates else ""
 
     # Sheet-Namen vorab festlegen, damit Mitarbeiterliste und Mitarbeiter-Tabs
